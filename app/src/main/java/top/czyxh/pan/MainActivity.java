@@ -39,7 +39,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -72,12 +71,15 @@ public class MainActivity extends Activity {
 
         Window window = getWindow();
         window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+        window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+        window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
         window.setStatusBarColor(Color.parseColor("#0B0F17"));
         window.setNavigationBarColor(Color.parseColor("#111726"));
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.parseColor("#0B0F17"));
+        root.setFitsSystemWindows(true);
 
         FrameLayout contentFrame = new FrameLayout(this);
         LinearLayout.LayoutParams frameLp = new LinearLayout.LayoutParams(
@@ -102,18 +104,16 @@ public class MainActivity extends Activity {
 
         root.addView(contentFrame, frameLp);
 
-        // Divider line
         View divider = new View(this);
         divider.setBackgroundColor(Color.parseColor("#1E293B"));
         root.addView(divider, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
 
-        // Native Bottom Navigation Bar
         LinearLayout bottomBar = new LinearLayout(this);
         bottomBar.setOrientation(LinearLayout.HORIZONTAL);
         bottomBar.setBackgroundColor(Color.parseColor("#111726"));
         bottomBar.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams navLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(60)
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(62)
         );
 
         tabBtnPhotos = createTabItem("🖼️", "云相册", true);
@@ -136,7 +136,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        tabBtnBackup = createTabItem("☁️", "自动备份", false);
+        tabBtnBackup = createTabItem("☁️", "备份与传输", false);
         tabIconBackup = (TextView) tabBtnBackup.getChildAt(0);
         tabTextBackup = (TextView) tabBtnBackup.getChildAt(1);
         tabBtnBackup.setOnClickListener(new View.OnClickListener() {
@@ -163,17 +163,21 @@ public class MainActivity extends Activity {
         LinearLayout item = new LinearLayout(this);
         item.setOrientation(LinearLayout.VERTICAL);
         item.setGravity(Gravity.CENTER);
-        item.setPadding(0, dp(6), 0, dp(6));
+        item.setPadding(0, dp(4), 0, dp(4));
 
         TextView icon = new TextView(this);
         icon.setText(emoji);
-        icon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        icon.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17);
+        icon.setIncludeFontPadding(false);
         icon.setGravity(Gravity.CENTER);
 
         TextView txt = new TextView(this);
         txt.setText(label);
-        txt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        txt.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
+        txt.setIncludeFontPadding(false);
+        txt.setPadding(0, dp(3), 0, 0);
         txt.setGravity(Gravity.CENTER);
+        txt.setSingleLine(true);
         txt.setTypeface(null, active ? Typeface.BOLD : Typeface.NORMAL);
         txt.setTextColor(Color.parseColor(active ? "#38BDF8" : "#94A3B8"));
 
@@ -225,18 +229,24 @@ public class MainActivity extends Activity {
         ws.setAllowContentAccess(true);
         ws.setAllowFileAccessFromFileURLs(true);
         ws.setAllowUniversalAccessFromFileURLs(true);
-        ws.setLoadWithOverviewMode(true);
-        ws.setUseWideViewPort(true);
+        // Critical: Do NOT enable wide viewport / overview mode on mobile UI, or long filenames blow out the viewport!
+        ws.setLoadWithOverviewMode(false);
+        ws.setUseWideViewPort(false);
+        ws.setSupportZoom(false);
+        ws.setBuiltInZoomControls(false);
+        ws.setDisplayZoomControls(false);
+        ws.setTextZoom(100);
         ws.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         ws.setMediaPlaybackRequiresUserGesture(false);
         ws.setCacheMode(WebSettings.LOAD_DEFAULT);
-        ws.setUserAgentString("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 CloudPhotoPanApp/1.0");
+        ws.setUserAgentString("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 CloudPhotoPanApp/1.1");
 
         CookieManager cm = CookieManager.getInstance();
         cm.setAcceptCookie(true);
         cm.setAcceptThirdPartyCookies(wv, true);
 
         wv.setBackgroundColor(Color.parseColor("#0B0F17"));
+        wv.setHorizontalScrollBarEnabled(false);
 
         wv.setWebViewClient(new WebViewClient() {
             @Override
@@ -250,6 +260,16 @@ public class MainActivity extends Activity {
                     startActivity(intent);
                 } catch (Exception ignored) {}
                 return true;
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                if (isAlist) {
+                    // Hide the web APK download & floating buttons inside the native app's AList tab
+                    String js = "(function(){var s=document.createElement('style');s.innerHTML='#ct-fab-wrap{display:none!important;}';document.head.appendChild(s);})();";
+                    view.evaluateJavascript(js, null);
+                }
             }
         });
 
@@ -385,7 +405,7 @@ public class MainActivity extends Activity {
                     synchronized (PhotoBackupService.pendingManualUris) {
                         PhotoBackupService.pendingManualUris.addAll(picked);
                     }
-                    Toast.makeText(this, "⚡ 开始极速直传 " + picked.size() + " 个文件至 R2...", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "⚡ 开始直传 " + picked.size() + " 个文件至云端...", Toast.LENGTH_SHORT).show();
                     startBackupService(PhotoBackupService.ACTION_UPLOAD_URIS, manualUploadTargetFolder);
                 }
             }
@@ -497,6 +517,13 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void stopBackupNow() {
+            Intent i = new Intent(MainActivity.this, PhotoBackupService.class);
+            i.setAction(PhotoBackupService.ACTION_STOP_BACKUP);
+            startService(i);
+        }
+
+        @JavascriptInterface
         public void clearBackedUpLedger() {
             BackupState.get(MainActivity.this).clearBackedUpLedger();
         }
@@ -510,13 +537,13 @@ public class MainActivity extends Activity {
                     Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
                     intent.addCategory(Intent.CATEGORY_OPENABLE);
                     if (mediaOnly) {
-                        intent.setType("*/*");
+                        intent.setType("image/*");
                         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
                     } else {
                         intent.setType("*/*");
                     }
                     intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-                    startActivityForResult(Intent.createChooser(intent, "选择要极速直传的照片/视频/文件"), REQ_PICK_MANUAL_UPLOAD);
+                    startActivityForResult(Intent.createChooser(intent, "选择要上传的照片/视频/文件"), REQ_PICK_MANUAL_UPLOAD);
                 }
             });
         }

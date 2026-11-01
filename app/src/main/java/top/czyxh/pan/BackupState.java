@@ -6,7 +6,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
@@ -19,6 +19,7 @@ public class BackupState {
     private final SharedPreferences prefs;
 
     public volatile boolean isRunning = false;
+    public volatile boolean stopRequested = false;
     public volatile String statusText = "待机中";
     public volatile String currentFile = "";
     public volatile int currentProgress = 0;
@@ -55,7 +56,7 @@ public class BackupState {
     }
 
     public Set<String> getSelectedBuckets() {
-        Set<String> def = new HashSet<>(Arrays.asList("Camera", "DCIM", "Screenshots"));
+        Set<String> def = new HashSet<>(Collections.singletonList("Camera"));
         return new HashSet<>(prefs.getStringSet("selected_buckets", def));
     }
 
@@ -81,13 +82,13 @@ public class BackupState {
 
     public synchronized void clearBackedUpLedger() {
         prefs.edit().putStringSet("backed_up_keys", new HashSet<String>()).apply();
-        addLog("已重置本地备份记录账本，下次扫描将重新与云端比对");
+        addLog("已重置本地备份账本，下次扫描将重新与云端比对");
     }
 
     public synchronized void addLog(String msg) {
         String ts = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date());
         logs.add(0, "[" + ts + "] " + msg);
-        if (logs.size() > 50) {
+        if (logs.size() > 60) {
             logs.remove(logs.size() - 1);
         }
     }
@@ -113,7 +114,12 @@ public class BackupState {
             obj.put("currentSpeedBps", currentSpeedBps);
             obj.put("sessionUploadedCount", sessionUploadedCount);
             obj.put("sessionTotalCount", sessionTotalCount);
-            obj.put("totalBackedUpCount", getBackedUpSet().size());
+
+            int distinctFiles = 0;
+            for (String k : getBackedUpSet()) {
+                if (!k.contains(":")) distinctFiles++;
+            }
+            obj.put("totalBackedUpCount", distinctFiles);
 
             JSONArray lArr = new JSONArray();
             for (String l : logs) {

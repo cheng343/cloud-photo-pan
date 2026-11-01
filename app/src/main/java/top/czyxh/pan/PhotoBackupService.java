@@ -5,7 +5,6 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
@@ -20,6 +19,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 
@@ -34,7 +34,6 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -44,6 +43,7 @@ public class PhotoBackupService extends Service {
     public static final String ACTION_SCAN_AND_BACKUP = "top.czyxh.pan.SCAN_AND_BACKUP";
     public static final String ACTION_UPLOAD_URIS = "top.czyxh.pan.UPLOAD_URIS";
     public static final String ACTION_START_WATCHER = "top.czyxh.pan.START_WATCHER";
+    public static final String ACTION_STOP_BACKUP = "top.czyxh.pan.STOP_BACKUP";
     public static final String EXTRA_TARGET_FOLDER = "target_folder";
 
     private static final String CHANNEL_ID = "cloud_photo_backup_channel";
@@ -57,6 +57,7 @@ public class PhotoBackupService extends Service {
     private ContentObserver mediaObserver;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Runnable debounceScanRunnable;
+    private volatile HttpURLConnection activePutConn = null;
 
     @Override
     public void onCreate() {
@@ -68,9 +69,33 @@ public class PhotoBackupService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        startForegroundSafe("云相册后台守护运行中", "随时自动直传新照片至 Cloudflare R2 -> Google Drive");
-
         String action = intent != null ? intent.getAction() : ACTION_START_WATCHER;
+
+        if (ACTION_STOP_BACKUP.equals(action)) {
+            BackupState state = BackupState.get(this);
+            state.stopRequested = true;
+            synchronized (pendingManualUris) {
+                pendingManualUris.clear();
+            }
+            if (activePutConn != null) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            HttpURLConnection c = activePutConn;
+                            if (c != null) c.disconnect();
+                        } catch (Exception ignored) {}
+                    }
+                }).start();
+            }
+            state.statusText = "已停止当前传输任务";
+            state.addLog("⏹️ 用户手动停止了当前上传/备份任务");
+            updateNotification("传输已停止", "云相册后台待机中");
+            return START_STICKY;
+        }
+
+        startForegroundSafe("云相册后台服务就绪", "支持 R2 极速直传与 Google Drive 自动归档");
+
         if (ACTION_UPLOAD_URIS.equals(action)) {
             final String folder = intent.getStringExtra(EXTRA_TARGET_FOLDER);
             final List<Uri> toUpload;
@@ -122,19 +147,19 @@ public class PhotoBackupService extends Service {
                             executor.submit(new Runnable() {
                                 @Override
                                 public void run() {
-                                    BackupState.get(PhotoBackupService.this).addLog("检测到相机新增媒体文件，触发自动备份...");
+                                    BackupState.get(PhotoBackupService.this).addLog("检测到相机新增照片/视频，准备自动备份...");
                                     scanAndBackupAlbums(false);
                                 }
                             });
                         }
                     };
-                    mainHandler.postDelayed(debounceScanRunnable, 2500);
+                    mainHandler.postDelayed(debounceScanRunnable, 3000);
                 }
             };
             getContentResolver().registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, mediaObserver);
             getContentResolver().registerContentObserver(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, mediaObserver);
         } catch (Exception e) {
-            BackupState.get(this).addLog("监听相册变动注册提示: " + e.getMessage());
+            BackupState.get(this).addLog("相册监听注册提示: " + e.getMessage());
         }
     }
 
@@ -198,12 +223,12 @@ public class PhotoBackupService extends Service {
         }
         if (!forceManual && state.isWifiOnly() && !isWifiConnected()) {
             state.statusText = "等待连接 Wi-Fi 后自动备份";
-            state.addLog("当前非 Wi-Fi 环境，已暂停自动备份");
             return;
         }
 
         state.isRunning = true;
-        state.statusText = "正在扫描手机相册与比对云端...";
+        state.stopRequested = false;
+        state.statusText = "正在比对云端与本地相册...";
         state.currentFile = "";
         state.currentProgress = 0;
         state.currentSpeedBps = 0;
@@ -214,6 +239,13 @@ public class PhotoBackupService extends Service {
             Set<String> selectedBuckets = state.getSelectedBuckets();
             boolean includeVideos = state.isIncludeVideos();
 
+            if (selectedBuckets.isEmpty()) {
+                state.statusText = "请先在【自动备份】页勾选要备份的相册目录";
+                state.addLog("⚠️ 未勾选任何相册目录，已跳过扫描");
+                state.isRunning = false;
+                return;
+            }
+
             List<MediaItem> candidates = new ArrayList<>();
             queryMediaUri(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, selectedBuckets, backedUp, candidates);
             if (includeVideos) {
@@ -221,8 +253,8 @@ public class PhotoBackupService extends Service {
             }
 
             if (candidates.isEmpty()) {
-                state.statusText = "所有相册照片已是最新同步状态";
-                state.addLog("扫描完成：没有发现未备份的新照片/视频");
+                state.statusText = "所选相册已是最新同步状态";
+                state.addLog("✅ 扫描完成：所选相册没有未备份的新照片/视频");
                 updateNotification("云相册已全部同步", "所有照片均已安全存放在 Google Drive");
                 state.isRunning = false;
                 return;
@@ -230,41 +262,54 @@ public class PhotoBackupService extends Service {
 
             state.sessionTotalCount = candidates.size();
             state.sessionUploadedCount = 0;
-            state.addLog("发现 " + candidates.size() + " 个新照片/视频，开始极速直传 R2...");
+            state.addLog("发现 " + candidates.size() + " 个未备份文件，开始直传 Cloudflare R2...");
 
             String targetFolder = state.getTargetFolder();
             for (int i = 0; i < candidates.size(); i++) {
+                if (state.stopRequested) {
+                    break;
+                }
                 if (!forceManual && !state.isAutoBackupEnabled()) {
-                    state.addLog("自动备份开关已关闭，中止队列");
+                    state.addLog("自动备份已关闭，停止剩余队列");
                     break;
                 }
                 if (!forceManual && state.isWifiOnly() && !isWifiConnected()) {
-                    state.addLog("Wi-Fi 已断开，暂停剩余备份队列");
+                    state.addLog("Wi-Fi 已断开，暂停剩余队列");
                     break;
                 }
                 MediaItem item = candidates.get(i);
                 state.statusText = "正在备份 (" + (i + 1) + "/" + candidates.size() + ")";
-                updateNotification("正在备份照片 (" + (i + 1) + "/" + candidates.size() + ")", item.name);
+                updateNotification("正在备份 (" + (i + 1) + "/" + candidates.size() + ")", item.name);
 
                 boolean ok = uploadSingleStreamToR2(item.uri, item.name, item.size, targetFolder, state);
                 if (ok) {
                     state.markBackedUp(item.name);
                     state.markBackedUp(item.name + ":" + item.size);
                     state.sessionUploadedCount++;
+                    if (state.sessionUploadedCount % 4 == 0) {
+                        triggerServerR2Sync();
+                    }
                 }
             }
 
-            triggerServerR2Sync();
-            state.statusText = "本次备份完成 (" + state.sessionUploadedCount + "/" + state.sessionTotalCount + ")";
+            if (state.sessionUploadedCount > 0) {
+                triggerServerR2Sync();
+            }
+            if (state.stopRequested) {
+                state.statusText = "已手动停止 (" + state.sessionUploadedCount + "/" + state.sessionTotalCount + ")";
+            } else {
+                state.statusText = "备份完成 (" + state.sessionUploadedCount + "/" + state.sessionTotalCount + ")";
+            }
             state.currentFile = "";
             state.currentProgress = 100;
             state.currentSpeedBps = 0;
-            updateNotification("云相册备份完成", "成功直传 " + state.sessionUploadedCount + " 个文件至 R2 并同步 Google Drive");
+            updateNotification("云相册备份完成", "已直传 " + state.sessionUploadedCount + " 个文件至云端");
         } catch (Exception e) {
-            state.statusText = "备份出错: " + e.getMessage();
+            state.statusText = "备份中断: " + e.getMessage();
             state.addLog("扫描异常: " + e.getMessage());
         } finally {
             state.isRunning = false;
+            state.stopRequested = false;
         }
     }
 
@@ -299,7 +344,7 @@ public class PhotoBackupService extends Service {
                     if (bucket == null || bucket.isEmpty()) bucket = "Default";
                     if (name == null || name.isEmpty() || size <= 0) continue;
 
-                    if (!selectedBuckets.isEmpty() && !selectedBuckets.contains(bucket) && !selectedBuckets.contains("ALL")) {
+                    if (!selectedBuckets.contains(bucket) && !selectedBuckets.contains("ALL")) {
                         continue;
                     }
                     if (backedUp.contains(name) || backedUp.contains(name + ":" + size)) {
@@ -315,7 +360,7 @@ public class PhotoBackupService extends Service {
                 }
             }
         } catch (Exception e) {
-            BackupState.get(this).addLog("读取相册目录提示: " + e.getMessage());
+            BackupState.get(this).addLog("读取相册提示: " + e.getMessage());
         } finally {
             if (cursor != null) cursor.close();
         }
@@ -325,12 +370,16 @@ public class PhotoBackupService extends Service {
         if (uris == null || uris.isEmpty()) return;
         BackupState state = BackupState.get(this);
         state.isRunning = true;
+        state.stopRequested = false;
         state.sessionTotalCount = uris.size();
         state.sessionUploadedCount = 0;
-        state.addLog("开始手动直传 " + uris.size() + " 个文件至 " + targetFolder);
+        state.addLog("开始直传所选的 " + uris.size() + " 个文件至 " + targetFolder);
 
         try {
             for (int i = 0; i < uris.size(); i++) {
+                if (state.stopRequested) {
+                    break;
+                }
                 Uri uri = uris.get(i);
                 String name = "upload_" + System.currentTimeMillis();
                 long size = -1;
@@ -347,7 +396,7 @@ public class PhotoBackupService extends Service {
                         c.close();
                     }
                 }
-                state.statusText = "正在直传 (" + (i + 1) + "/" + uris.size() + ")";
+                state.statusText = "正在上传 (" + (i + 1) + "/" + uris.size() + ")";
                 updateNotification("正在上传 (" + (i + 1) + "/" + uris.size() + ")", name);
                 boolean ok = uploadSingleStreamToR2(uri, name, size, targetFolder, state);
                 if (ok) {
@@ -356,21 +405,27 @@ public class PhotoBackupService extends Service {
                     state.sessionUploadedCount++;
                 }
             }
-            triggerServerR2Sync();
-            state.statusText = "上传完成 (" + state.sessionUploadedCount + "/" + uris.size() + ")";
+            if (state.sessionUploadedCount > 0) {
+                triggerServerR2Sync();
+            }
+            state.statusText = state.stopRequested
+                    ? "已停止上传 (" + state.sessionUploadedCount + "/" + uris.size() + ")"
+                    : "上传完成 (" + state.sessionUploadedCount + "/" + uris.size() + ")";
             state.currentFile = "";
             state.currentProgress = 100;
             state.currentSpeedBps = 0;
-            updateNotification("上传完成", "已直传 " + state.sessionUploadedCount + " 个文件并触发 Google Drive 同步");
+            updateNotification("上传完成", "已直传 " + state.sessionUploadedCount + " 个文件至云端");
         } catch (Exception e) {
-            state.statusText = "上传异常: " + e.getMessage();
+            state.statusText = "上传中断: " + e.getMessage();
             state.addLog("上传异常: " + e.getMessage());
         } finally {
             state.isRunning = false;
+            state.stopRequested = false;
         }
     }
 
     private boolean uploadSingleStreamToR2(Uri fileUri, String fileName, long fileSize, String targetFolder, BackupState state) {
+        if (state.stopRequested) return false;
         state.currentFile = fileName;
         state.currentProgress = 0;
         state.currentSpeedBps = 0;
@@ -381,7 +436,15 @@ public class PhotoBackupService extends Service {
         OutputStream out = null;
 
         try {
-            // 1. Determine exact byte length if unknown
+            if (fileSize <= 0) {
+                try {
+                    ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(fileUri, "r");
+                    if (pfd != null) {
+                        fileSize = pfd.getStatSize();
+                        pfd.close();
+                    }
+                } catch (Exception ignored) {}
+            }
             if (fileSize <= 0) {
                 InputStream tmp = getContentResolver().openInputStream(fileUri);
                 if (tmp != null) {
@@ -390,7 +453,6 @@ public class PhotoBackupService extends Service {
                 }
             }
 
-            // 2. Request R2 Presigned PUT URL from server
             String cleanFolder = (targetFolder == null || targetFolder.isEmpty()) ? "/GoogleDrive/photos" : targetFolder;
             if (!cleanFolder.startsWith("/")) cleanFolder = "/" + cleanFolder;
             String fullTarget = cleanFolder.replaceAll("/+$", "") + "/" + fileName;
@@ -421,8 +483,8 @@ public class PhotoBackupService extends Service {
                 return false;
             }
 
-            // 3. Stream directly to Cloudflare R2 Storage (bypasses 100MB CDN limit & uses 0 server bandwidth)
             putConn = (HttpURLConnection) new URL(putUrl).openConnection();
+            activePutConn = putConn;
             putConn.setRequestMethod("PUT");
             putConn.setDoOutput(true);
             putConn.setConnectTimeout(20000);
@@ -448,6 +510,10 @@ public class PhotoBackupService extends Service {
             int n;
 
             while ((n = in.read(buf)) != -1) {
+                if (state.stopRequested) {
+                    putConn.disconnect();
+                    return false;
+                }
                 out.write(buf, 0, n);
                 transferred += n;
                 long now = System.currentTimeMillis();
@@ -466,17 +532,19 @@ public class PhotoBackupService extends Service {
             if (putStatus >= 200 && putStatus < 300) {
                 state.currentProgress = 100;
                 String sizeMb = String.format("%.2f MB", transferred / 1048576.0);
-                state.addLog("✅ 直传 R2 成功: " + fileName + " (" + sizeMb + ")");
-                triggerServerR2Sync();
+                state.addLog("✅ 直传成功: " + fileName + " (" + sizeMb + ")");
                 return true;
             } else {
                 state.addLog("❌ R2 返回 HTTP " + putStatus + ": " + fileName);
                 return false;
             }
         } catch (Exception e) {
-            state.addLog("❌ 上传失败 " + fileName + ": " + e.getMessage());
+            if (!state.stopRequested) {
+                state.addLog("❌ 上传失败 " + fileName + ": " + e.getMessage());
+            }
             return false;
         } finally {
+            activePutConn = null;
             try { if (in != null) in.close(); } catch (Exception ignored) {}
             try { if (out != null) out.close(); } catch (Exception ignored) {}
             if (presignConn != null) presignConn.disconnect();
