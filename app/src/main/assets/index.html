@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0, user-scalable=yes" />
+<title>云相册网盘</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --card: #131b2e;
+    --card-border: #1e293b;
+    --accent: #38bdf8;
+    --accent2: #6366f1;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --ok: #10b981;
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow-x: hidden;
+  }
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(11, 15, 23, 0.92);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--card-border);
+    padding: 12px 14px 10px;
+  }
+  .topbar-row1 {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 18px; font-weight: 800; letter-spacing: 0.3px;
+  }
+  .brand-badge {
+    font-size: 11px; font-weight: 600;
+    background: rgba(56, 189, 248, 0.15);
+    color: var(--accent);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    padding: 2px 8px; border-radius: 999px;
+  }
+  .btn-group { display: flex; gap: 6px; }
+  .btn {
+    border: none; outline: none; cursor: pointer;
+    font-size: 12px; font-weight: 700;
+    padding: 7px 11px; border-radius: 10px;
+    display: inline-flex; align-items: center; gap: 4px;
+    color: #fff; background: #1e293b;
+    border: 1px solid #334155;
+    transition: transform 0.12s, opacity 0.12s;
+  }
+  .btn:active { transform: scale(0.95); }
+  .btn-primary {
+    background: linear-gradient(135deg, #0ea5e9, #6366f1);
+    border: none;
+    box-shadow: 0 3px 12px rgba(14, 165, 233, 0.3);
+  }
+  .btn-success {
+    background: linear-gradient(135deg, #10b981, #059669);
+    border: none;
+  }
+  .filter-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 10px; gap: 8px;
+  }
+  .pills { display: flex; gap: 6px; }
+  .pill {
+    font-size: 12px; font-weight: 600;
+    padding: 4px 11px; border-radius: 999px;
+    background: #151e32; color: var(--muted);
+    border: 1px solid #1e293b; cursor: pointer;
+  }
+  .pill.active {
+    background: rgba(56, 189, 248, 0.18);
+    color: var(--accent);
+    border-color: rgba(56, 189, 248, 0.45);
+  }
+
+  /* Live Upload / Sync Banner */
+  .live-banner {
+    margin: 10px 12px 2px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(14, 165, 233, 0.16), rgba(99, 102, 241, 0.16));
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    display: none;
+  }
+  .live-banner.show { display: block; }
+  .live-title {
+    font-size: 12px; font-weight: 700; color: #e0f2fe;
+    display: flex; justify-content: space-between; margin-bottom: 6px;
+  }
+  .progress-track {
+    width: 100%; height: 6px; background: rgba(15, 23, 42, 0.8);
+    border-radius: 999px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, #38bdf8, #818cf8);
+    transition: width 0.22s ease;
+  }
+
+  /* Gallery Grid */
+  .date-section { margin: 12px 10px 16px; }
+  .date-header {
+    font-size: 13px; font-weight: 700; color: #cbd5e1;
+    margin: 6px 4px 8px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .photo-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 5px;
+  }
+  @media (min-width: 600px) {
+    .photo-grid { grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  }
+  .photo-cell {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    background: #131c2e;
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.05);
+  }
+  .photo-cell img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.2s;
+  }
+  .photo-cell:active img { transform: scale(0.96); }
+  .cell-badge {
+    position: absolute; bottom: 5px; right: 5px;
+    background: rgba(0, 0, 0, 0.72);
+    backdrop-filter: blur(4px);
+    color: #fff; font-size: 10px; font-weight: 700;
+    padding: 2px 6px; border-radius: 5px;
+    display: flex; align-items: center; gap: 3px;
+  }
+  .cell-syncing {
+    position: absolute; top: 5px; left: 5px;
+    background: rgba(245, 158, 11, 0.9);
+    color: #fff; font-size: 9px; font-weight: 700;
+    padding: 2px 5px; border-radius: 4px;
+  }
+  .video-play-overlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0) 70%);
+    pointer-events: none;
+  }
+  .video-play-circle {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: rgba(15, 23, 42, 0.75);
+    border: 1.5px solid rgba(255,255,255,0.8);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: #fff; padding-left: 2px;
+  }
+
+  .empty-state {
+    text-align: center; padding: 60px 24px; color: var(--muted);
+  }
+  .empty-icon { font-size: 48px; margin-bottom: 12px; }
+
+  /* Fullscreen Lightbox */
+  .lightbox {
+    position: fixed; inset: 0; z-index: 200;
+    background: rgba(5, 8, 15, 0.97);
+    display: none; flex-direction: column;
+  }
+  .lightbox.open { display: flex; }
+  .lb-top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px;
+    background: rgba(15, 23, 42, 0.85);
+    border-bottom: 1px solid #1e293b;
+  }
+  .lb-title {
+    font-size: 13px; font-weight: 700; color: #f8fafc;
+    max-width: 72%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .lb-body {
+    flex: 1; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  .lb-body img {
+    max-width: 100%; max-height: 100%;
+    object-fit: contain;
+    transition: transform 0.2s ease;
+  }
+  .lb-body video {
+    width: 100%; max-height: 100%;
+    outline: none; background: #000;
+  }
+  .lb-nav {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(30, 41, 59, 0.75);
+    color: #fff; border: 1px solid rgba(255,255,255,0.2);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; cursor: pointer; z-index: 10;
+  }
+  .lb-prev { left: 10px; }
+  .lb-next { right: 10px; }
+  .lb-bottom {
+    padding: 12px 16px;
+    background: rgba(15, 23, 42, 0.9);
+    border-top: 1px solid #1e293b;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .lb-meta { font-size: 11px; color: var(--muted); }
+
+  /* Backup & Settings View */
+  .view-panel { display: none; padding-bottom: 30px; }
+  .view-panel.active { display: block; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    margin: 12px; padding: 14px;
+  }
+  .card-title {
+    font-size: 14px; font-weight: 800; color: #f8fafc;
+    margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .setting-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .setting-row:last-child { border-bottom: none; }
+  .setting-label { font-size: 13px; font-weight: 600; color: #e2e8f0; }
+  .setting-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  input[type="checkbox"].toggle {
+    width: 42px; height: 22px; accent-color: var(--accent); cursor: pointer;
+  }
+  .album-chips {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
+  }
+  .album-chip {
+    padding: 6px 11px; border-radius: 10px;
+    font-size: 12px; font-weight: 600;
+    background: #0f172a; color: #94a3b8;
+    border: 1px solid #334155; cursor: pointer;
+  }
+  .album-chip.selected {
+    background: rgba(16, 185, 129, 0.16);
+    color: #34d399;
+    border-color: rgba(16, 185, 129, 0.5);
+  }
+  .log-box {
+    background: #070a10; border: 1px solid #1e293b;
+    border-radius: 10px; padding: 10px;
+    font-family: monospace; font-size: 11px; color: #94a3b8;
+    max-height: 220px; overflow-y: auto; line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+
+<!-- ================= VIEW 1: PHOTO & VIDEO GALLERY ================= -->
+<div id="view-photos" class="view-panel active">
+  <div class="topbar">
+    <div class="topbar-row1">
+      <div class="brand">
+        <span>🖼️ 云相册</span>
+        <span id="photo-count-badge" class="brand-badge">加载中...</span>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="uploadMediaNow()">➕ 传照片/视频</button>
+        <button class="btn btn-success" onclick="triggerPhoneBackup()">⚡ 一键备份</button>
+        <button class="btn" onclick="loadPhotos(true)">🔄</button>
+      </div>
+    </div>
+    <div class="filter-bar">
+      <div class="pills">
+        <div class="pill active" id="flt-all" onclick="setFilter('all')">全部</div>
+        <div class="pill" id="flt-img" onclick="setFilter('img')">仅照片</div>
+        <div class="pill" id="flt-vid" onclick="setFilter('vid')">仅视频</div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);" id="sub-status-text">免梯边缘直连 · 0 占服务器盘</div>
+    </div>
+  </div>
+
+  <!-- Live Upload / Sync Progress Banner -->
+  <div id="live-banner" class="live-banner">
+    <div class="live-title">
+      <span id="live-banner-title">⚡ 正在极速直传...</span>
+      <span id="live-banner-speed">0 MB/s</span>
+    </div>
+    <div class="progress-track">
+      <div id="live-banner-fill" class="progress-fill"></div>
+    </div>
+  </div>
+
+  <div id="gallery-container"></div>
+</div>
+
+<!-- ================= VIEW 2: AUTO BACKUP & CLOUD TRANSFER ================= -->
+<div id="view-backup" class="view-panel">
+  <div class="topbar">
+    <div class="topbar-row1">
+      <div class="brand">
+        <span>☁️ 自动备份与传输中心</span>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="triggerPhoneBackup()">⚡ 立即扫描备份</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">
+      <span>📊 当前备份引擎状态</span>
+      <span id="bk-badge" class="brand-badge">待机中</span>
+    </div>
+    <div style="font-size:12px;color:#cbd5e1;margin-bottom:8px;" id="bk-detail-line">
+      已累计备份 0 个文件 · 拍完照自动直传 Cloudflare R2 并归档至 Google Drive
+    </div>
+    <div class="progress-track" style="height:8px;margin-bottom:10px;">
+      <div id="bk-progress-fill" class="progress-fill"></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-primary" onclick="triggerPhoneBackup()">🚀 立即备份新照片</button>
+      <button class="btn" onclick="uploadAnyFileNow()">📁 手动选任意文件直传</button>
+      <button class="btn" onclick="resetLedger()">🔄 重置比对账本</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">⚙️ 自动备份策略设置</div>
+    <div class="setting-row">
+      <div>
+        <div class="setting-label">开启后台自动备份相册</div>
+        <div class="setting-sub">手机拍照/录像后，后台自动直传 R2 并转存 Google Drive</div>
+      </div>
+      <input type="checkbox" id="chk-auto" class="toggle" onchange="saveSettingsFromUi()" />
+    </div>
+    <div class="setting-row">
+      <div>
+        <div class="setting-label">仅在 Wi-Fi 下自动备份</div>
+        <div class="setting-sub">防止消耗移动蜂窝流量</div>
+      </div>
+      <input type="checkbox" id="chk-wifi" class="toggle" checked onchange="saveSettingsFromUi()" />
+    </div>
+    <div class="setting-row">
+      <div>
+        <div class="setting-label">同时备份视频文件</div>
+        <div class="setting-sub">支持 4K 超大视频（>=200MB 自动启用 4 分片极速云同步）</div>
+      </div>
+      <input type="checkbox" id="chk-video" class="toggle" checked onchange="saveSettingsFromUi()" />
+    </div>
+    <div class="setting-row" style="flex-direction:column;align-items:flex-start;">
+      <div class="setting-label">选择要自动备份的手机相册目录（点击切换）：</div>
+      <div class="setting-sub">默认已勾选相机 (Camera)，可按需勾选截图或微信相册</div>
+      <div id="album-chips-box" class="album-chips"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">
+      <span>⚡ 云端 R2 -> Google Drive 实时同步队列</span>
+      <button class="btn" style="padding:3px 8px;font-size:11px;" onclick="pollCloudTasks()">刷新</button>
+    </div>
+    <div id="cloud-tasks-box" style="font-size:12px;color:var(--muted);">暂无正在进行的云端大文件转存任务</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">📜 实时传输日志</div>
+    <div id="bk-logs" class="log-box">等待任务启动...</div>
+  </div>
+</div>
+
+<!-- ================= FULLSCREEN LIGHTBOX ================= -->
+<div id="lightbox" class="lightbox">
+  <div class="lb-top">
+    <div id="lb-filename" class="lb-title">IMG.jpg</div>
+    <div class="btn-group">
+      <button class="btn" onclick="toggleZoom()">🔍 缩放</button>
+      <button class="btn" onclick="closeLightbox()">✕ 关闭</button>
+    </div>
+  </div>
+  <div class="lb-body" id="lb-stage">
+    <div class="lb-nav lb-prev" onclick="stepLightbox(-1)">❮</div>
+    <div id="lb-media-wrap" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;"></div>
+    <div class="lb-nav lb-next" onclick="stepLightbox(1)">❯</div>
+  </div>
+  <div class="lb-bottom">
+    <div id="lb-meta" class="lb-meta"></div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="downloadCurrentLightbox()">⬇️ 原图/原片下载</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = "https://pan.czyxh.top";
+let allPhotos = [];
+let currentFilter = "all";
+let currentLbIndex = -1;
+let isZoomed = false;
+let selectedAlbumsSet = new Set(["Camera", "DCIM", "Screenshots"]);
+
+function formatSize(bytes) {
+  if (!bytes || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0, val = bytes;
+  while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
+  return val.toFixed(i > 1 ? 1 : 0) + " " + units[i];
+}
+
+function formatDateGroup(iso) {
+  if (!iso) return "未知日期";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso.slice(0, 10);
+  const now = new Date();
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+  const itemStr = `${y}-${m}-${day}`;
+  if (itemStr === todayStr) return `今天 (${m}月${day}日)`;
+  return `${y}年${m}月${day}日`;
+}
+
+window.onNativeTabChanged = function(tab) {
+  document.getElementById("view-photos").classList.toggle("active", tab === "photos");
+  document.getElementById("view-backup").classList.toggle("active", tab === "backup");
+  if (tab === "photos") {
+    loadPhotos(false);
+  } else if (tab === "backup") {
+    refreshAlbumsAndConfig();
+    pollCloudTasks();
+  }
+};
+
+function setFilter(f) {
+  currentFilter = f;
+  document.getElementById("flt-all").classList.toggle("active", f === "all");
+  document.getElementById("flt-img").classList.toggle("active", f === "img");
+  document.getElementById("flt-vid").classList.toggle("active", f === "vid");
+  renderGallery();
+}
+
+function getFilteredList() {
+  return allPhotos.filter(item => {
+    if (currentFilter === "img") return !item.is_video;
+    if (currentFilter === "vid") return item.is_video;
+    return true;
+  });
+}
+
+async function loadPhotos(forceRefresh) {
+  const badge = document.getElementById("photo-count-badge");
+  try {
+    const url = API_BASE + "/api/cloud_transfer/photos" + (forceRefresh ? "?refresh=1" : "");
+    const res = await fetch(url);
+    const json = await res.json();
+    if (json && json.code === 200 && Array.isArray(json.data)) {
+      allPhotos = json.data;
+      badge.textContent = allPhotos.length + " 项";
+      renderGallery();
+    }
+  } catch (e) {
+    badge.textContent = "离线/重试中";
+  }
+}
+
+function renderGallery() {
+  const container = document.getElementById("gallery-container");
+  const list = getFilteredList();
+  if (list.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">📸</div>
+        <div style="font-size:15px;font-weight:700;color:#e2e8f0;margin-bottom:6px;">相册还没有照片或视频</div>
+        <div style="font-size:12px;margin-bottom:16px;">点击右上角【➕ 传照片/视频】或【⚡ 一键备份】，拍完照自动直传 R2 并永久归档至 Google Drive</div>
+        <button class="btn btn-primary" onclick="uploadMediaNow()">➕ 立即上传第一张照片</button>
+      </div>`;
+    return;
+  }
+
+  // Group by date
+  const groups = new Map();
+  list.forEach((item, idx) => {
+    item._filteredIdx = idx;
+    const g = formatDateGroup(item.modified);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(item);
+  });
+
+  let html = "";
+  for (const [dateTitle, items] of groups.entries()) {
+    html += `<div class="date-section">
+      <div class="date-header">
+        <span>📅 ${dateTitle}</span>
+        <span style="font-size:11px;color:var(--muted);">${items.length} 项</span>
+      </div>
+      <div class="photo-grid">`;
+    for (const it of items) {
+      const syncTag = it.status === "syncing" ? `<div class="cell-syncing">⚡ R2同步中</div>` : "";
+      const playOverlay = it.is_video ? `<div class="video-play-overlay"><div class="video-play-circle">▶</div></div>` : "";
+      const badgeText = it.is_video ? `🎬 ${formatSize(it.size)}` : formatSize(it.size);
+      html += `
+        <div class="photo-cell" onclick="openLightbox(${it._filteredIdx})">
+          ${ it.is_video && it.thumb_url === it.full_url
+             ? `<video src="${it.full_url}#t=0.5" preload="metadata" muted playsinline style="width:100%;height:100%;object-fit:cover;"></video>`
+             : `<img src="${it.thumb_url}" loading="lazy" onerror="if(this.src!=='${it.full_url}')this.src='${it.full_url}';" />`
+          }
+          ${syncTag}
+          ${playOverlay}
+          <div class="cell-badge">${badgeText}</div>
+        </div>`;
+    }
+    html += `</div></div>`;
+  }
+  container.innerHTML = html;
+}
+
+function openLightbox(idx) {
+  const list = getFilteredList();
+  if (idx < 0 || idx >= list.length) return;
+  currentLbIndex = idx;
+  isZoomed = false;
+  const item = list[idx];
+  document.getElementById("lb-filename").textContent = item.name;
+  document.getElementById("lb-meta").textContent = `${formatSize(item.size)} · ${formatDateGroup(item.modified)} · ${item.status === "syncing" ? "R2 极速归档中" : "Google Drive 云端原片"}`;
+  const wrap = document.getElementById("lb-media-wrap");
+  if (item.is_video) {
+    wrap.innerHTML = `<video src="${item.full_url}" controls autoplay playsinline></video>`;
+  } else {
+    wrap.innerHTML = `<img id="lb-img" src="${item.full_url}" onclick="toggleZoom()" />`;
+  }
+  document.getElementById("lightbox").classList.add("open");
+}
+
+function stepLightbox(dir) {
+  const list = getFilteredList();
+  if (!list.length) return;
+  let next = currentLbIndex + dir;
+  if (next < 0) next = list.length - 1;
+  if (next >= list.length) next = 0;
+  openLightbox(next);
+}
+
+function toggleZoom() {
+  const img = document.getElementById("lb-img");
+  if (!img) return;
+  isZoomed = !isZoomed;
+  img.style.transform = isZoomed ? "scale(2.2)" : "scale(1)";
+}
+
+function closeLightbox() {
+  document.getElementById("lb-media-wrap").innerHTML = "";
+  document.getElementById("lightbox").classList.remove("open");
+}
+
+function downloadCurrentLightbox() {
+  const list = getFilteredList();
+  if (currentLbIndex < 0 || currentLbIndex >= list.length) return;
+  const item = list[currentLbIndex];
+  if (window.NativeApp && window.NativeApp.downloadFile) {
+    window.NativeApp.downloadFile(item.download_url, item.name);
+  } else {
+    window.open(item.download_url, "_blank");
+  }
+}
+
+function uploadMediaNow() {
+  if (window.NativeApp && window.NativeApp.pickAndUploadMedia) {
+    window.NativeApp.pickAndUploadMedia("/GoogleDrive/photos", true);
+  }
+}
+
+function uploadAnyFileNow() {
+  if (window.NativeApp && window.NativeApp.pickAndUploadMedia) {
+    window.NativeApp.pickAndUploadMedia("/GoogleDrive", false);
+  }
+}
+
+function triggerPhoneBackup() {
+  if (window.NativeApp && window.NativeApp.startBackupNow) {
+    window.NativeApp.startBackupNow();
+  }
+}
+
+function resetLedger() {
+  if (window.NativeApp && window.NativeApp.clearBackedUpLedger) {
+    window.NativeApp.clearBackedUpLedger();
+    pollNativeState();
+  }
+}
+
+function refreshAlbumsAndConfig() {
+  if (!window.NativeApp) return;
+  try {
+    const st = JSON.parse(window.NativeApp.getBackupStateJson() || "{}");
+    document.getElementById("chk-auto").checked = !!st.autoBackupEnabled;
+    document.getElementById("chk-wifi").checked = st.wifiOnly !== false;
+    document.getElementById("chk-video").checked = st.includeVideos !== false;
+    if (Array.isArray(st.selectedBuckets)) {
+      selectedAlbumsSet = new Set(st.selectedBuckets);
+    }
+
+    const albums = JSON.parse(window.NativeApp.getPhoneAlbumsJson() || "[]");
+    const box = document.getElementById("album-chips-box");
+    box.innerHTML = albums.map(a => {
+      const sel = selectedAlbumsSet.has(a.bucket);
+      return `<div class="album-chip ${sel ? 'selected' : ''}" onclick="toggleAlbum('${a.bucket.replace(/'/g, "\\'")}')">
+        ${sel ? '✅' : '⬜'} ${a.bucket} (${a.count})
+      </div>`;
+    }).join("");
+  } catch (e) {}
+}
+
+function toggleAlbum(bucket) {
+  if (selectedAlbumsSet.has(bucket)) {
+    selectedAlbumsSet.delete(bucket);
+  } else {
+    selectedAlbumsSet.add(bucket);
+  }
+  saveSettingsFromUi();
+  refreshAlbumsAndConfig();
+}
+
+function saveSettingsFromUi() {
+  if (!window.NativeApp || !window.NativeApp.saveBackupConfig) return;
+  const autoEn = document.getElementById("chk-auto").checked;
+  const wifiOnly = document.getElementById("chk-wifi").checked;
+  const incVid = document.getElementById("chk-video").checked;
+  const bucketsJson = JSON.stringify(Array.from(selectedAlbumsSet));
+  window.NativeApp.saveBackupConfig(autoEn, wifiOnly, incVid, "/GoogleDrive/photos", bucketsJson);
+}
+
+let wasRunningLastPoll = false;
+function pollNativeState() {
+  if (!window.NativeApp || !window.NativeApp.getBackupStateJson) return;
+  try {
+    const st = JSON.parse(window.NativeApp.getBackupStateJson() || "{}");
+    const banner = document.getElementById("live-banner");
+    const speedMb = st.currentSpeedBps ? (st.currentSpeedBps / 1048576).toFixed(2) + " MB/s" : "";
+
+    if (st.isRunning) {
+      banner.classList.add("show");
+      document.getElementById("live-banner-title").textContent = `⚡ ${st.statusText} ${st.currentFile ? '· ' + st.currentFile : ''}`;
+      document.getElementById("live-banner-speed").textContent = speedMb || (st.currentProgress + "%");
+      document.getElementById("live-banner-fill").style.width = (st.currentProgress || 5) + "%";
+    } else {
+      banner.classList.remove("show");
+      if (wasRunningLastPoll) {
+        loadPhotos(true);
+      }
+    }
+    wasRunningLastPoll = !!st.isRunning;
+
+    document.getElementById("bk-badge").textContent = st.statusText || "待机中";
+    document.getElementById("bk-detail-line").textContent =
+      `已累计备份 ${st.totalBackedUpCount || 0} 个媒体文件 ${st.currentFile ? '· 当前: ' + st.currentFile : ''}`;
+    document.getElementById("bk-progress-fill").style.width = (st.currentProgress || 0) + "%";
+
+    if (Array.isArray(st.logs) && st.logs.length > 0) {
+      document.getElementById("bk-logs").innerHTML = st.logs.map(l => `<div>${l}</div>`).join("");
+    }
+  } catch (e) {}
+}
+
+async function pollCloudTasks() {
+  try {
+    const res = await fetch(API_BASE + "/api/cloud_transfer/tasks");
+    const json = await res.json();
+    const list = (json && json.data) || [];
+    const active = list.filter(t => t.status === "pending" || t.status === "transferring");
+    const box = document.getElementById("cloud-tasks-box");
+    if (active.length === 0) {
+      box.innerHTML = `<span style="color:#10b981;">✅ 所有 R2 照片与视频均已同步归档至 Google Drive</span>`;
+      return;
+    }
+    box.innerHTML = active.map(t => {
+      const pct = t.file_size > 0 ? Math.min(100, Math.round((t.transferred * 100) / t.file_size)) : 0;
+      const spd = t.speed ? (t.speed / 1048576).toFixed(1) + " MB/s" : "准备中";
+      return `<div style="margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px;color:#e2e8f0;">
+          <span>${t.filename}</span>
+          <span>${pct}% · ${spd}</span>
+        </div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div>`;
+    }).join("");
+  } catch (e) {}
+}
+
+// Initial boot
+loadPhotos(false);
+refreshAlbumsAndConfig();
+setInterval(pollNativeState, 800);
+setInterval(pollCloudTasks, 4000);
+</script>
+</body>
+</html>
