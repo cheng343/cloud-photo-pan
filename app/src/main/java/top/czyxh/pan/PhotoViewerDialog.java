@@ -1,15 +1,12 @@
 package top.czyxh.pan;
 
-import android.animation.Animator;
-import android.animation.AnimatorListenerAdapter;
-import android.animation.ValueAnimator;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
-import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -22,12 +19,10 @@ import android.os.Looper;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.MotionEvent;
-import android.view.VelocityTracker;
 import android.view.View;
-import android.view.ViewConfiguration;
 import android.view.ViewGroup;
-import android.view.animation.DecelerateInterpolator;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -37,6 +32,16 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.VideoView;
 
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.recyclerview.widget.RecyclerView;
+import androidx.viewpager2.widget.ViewPager2;
+
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.github.chrisbanes.photoview.PhotoView;
+import com.google.android.material.bottomsheet.BottomSheetDialog;
+
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -44,54 +49,35 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Flagship-style Fullscreen Photo & Video Viewer Dialog:
- * - Real-time finger-following horizontal swipe paging between photos
- * - Two-finger pinch zoom (1x-5x) & pan via ZoomableImageView
- * - Inline VideoView playback with custom SeekBar & time controls
- * - Immersive single-tap toolbar hide/show
- * - Native EXIF & metadata details dialog
+ * Mature Flagship Photo & Video Viewer powered by ViewPager2 + PhotoView + Glide + MD3 BottomSheetDialog.
+ * Eliminates custom gesture math, gesture conflicts, and memory issues.
  */
 public class PhotoViewerDialog {
 
     public interface ViewerCallbacks {
-        Bitmap getCachedThumb(String key);
-        void loadHighResBitmap(MainActivity.GalleryItem item, BitmapCallback cb);
         void onUploadItem(MainActivity.GalleryItem item);
         void onDownloadItem(MainActivity.GalleryItem item);
-        void onDeleteItem(MainActivity.GalleryItem item);
-        boolean isFavorite(String key);
-        void toggleFavorite(String key);
+        void onDeleteItem(MainActivity.GalleryItem item, Runnable onDeleted);
+        void onToggleFavorite(MainActivity.GalleryItem item, boolean fav);
+        boolean isFavorite(MainActivity.GalleryItem item);
     }
 
-    public interface BitmapCallback {
-        void onLoaded(Bitmap bmp);
-    }
-
-    private final MainActivity activity;
+    private final AppCompatActivity activity;
     private final List<MainActivity.GalleryItem> items;
-    private final ViewerCallbacks callbacks;
     private int currentIndex;
-    private boolean barsVisible = true;
+    private final ViewerCallbacks callbacks;
 
     private Dialog dialog;
-    private SwipeStageLayout stageLayout;
-    private LinearLayout topBar;
-    private LinearLayout bottomBar;
-    private LinearLayout videoControlsBar;
-    private TextView tvTitle, tvSubtitle;
-    private ImageView ivFavIcon, ivCloudActionIcon;
-    private TextView tvFavLabel, tvCloudActionLabel;
+    private ViewPager2 viewPager;
+    private View topBar;
+    private View bottomBar;
+    private TextView tvTitle;
+    private TextView tvSub;
+    private ImageView ivFavorite;
+    private ImageView ivActionCloud;
+    private boolean barsVisible = true;
 
-    private ZoomableImageView prevImageView, currImageView, nextImageView;
-    private VideoView activeVideoView;
-    private ProgressBar loadingSpinner;
-    private SeekBar videoSeekBar;
-    private TextView tvVideoTime, btnVideoPlayPause;
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private Runnable videoProgressRunnable;
-    private boolean isVideoPlaying = false;
-
-    public PhotoViewerDialog(MainActivity activity, List<MainActivity.GalleryItem> items, int startIndex, ViewerCallbacks callbacks) {
+    public PhotoViewerDialog(AppCompatActivity activity, List<MainActivity.GalleryItem> items, int startIndex, ViewerCallbacks callbacks) {
         this.activity = activity;
         this.items = items;
         this.currentIndex = Math.max(0, Math.min(startIndex, items.size() - 1));
@@ -99,60 +85,80 @@ public class PhotoViewerDialog {
     }
 
     public void show() {
-        if (items.isEmpty()) return;
+        if (items == null || items.isEmpty()) return;
+
         dialog = new Dialog(activity, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        Window win = dialog.getWindow();
+        if (win != null) {
+            win.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+                win.setStatusBarColor(Color.TRANSPARENT);
+                win.setNavigationBarColor(Color.parseColor("#80000000"));
+            }
+        }
 
         FrameLayout root = new FrameLayout(activity);
         root.setBackgroundColor(Color.BLACK);
 
-        // 1. Finger-following 3-page swipe stage (Prev, Curr, Next)
-        stageLayout = new SwipeStageLayout(activity);
-        prevImageView = new ZoomableImageView(activity);
-        currImageView = new ZoomableImageView(activity);
-        nextImageView = new ZoomableImageView(activity);
+        viewPager = new ViewPager2(activity);
+        viewPager.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        viewPager.setOrientation(ViewPager2.ORIENTATION_HORIZONTAL);
+        viewPager.setOffscreenPageLimit(1);
+        viewPager.setAdapter(new MediaPagerAdapter());
 
-        ZoomableImageView.OnTapListener tapToggle = new ZoomableImageView.OnTapListener() {
+        topBar = buildTopBar();
+        bottomBar = buildBottomBar();
+
+        root.addView(viewPager);
+        root.addView(topBar);
+        root.addView(bottomBar);
+
+        dialog.setContentView(root);
+        dialog.show();
+
+        viewPager.setCurrentItem(currentIndex, false);
+        updateBarInfo(currentIndex);
+
+        viewPager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback() {
             @Override
-            public void onSingleTap() {
-                toggleBars();
+            public void onPageSelected(int position) {
+                super.onPageSelected(position);
+                currentIndex = position;
+                updateBarInfo(position);
             }
-        };
-        prevImageView.setOnTapListener(tapToggle);
-        currImageView.setOnTapListener(tapToggle);
-        nextImageView.setOnTapListener(tapToggle);
+        });
+    }
 
-        stageLayout.addView(prevImageView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        stageLayout.addView(currImageView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        stageLayout.addView(nextImageView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    private View buildTopBar() {
+        LinearLayout bar = new LinearLayout(activity);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(16), dp(36), dp(16), dp(14));
+        bar.setBackground(makeGradient(Color.parseColor("#CC000000"), Color.TRANSPARENT));
 
-        root.addView(stageLayout, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.gravity = Gravity.TOP;
+        bar.setLayoutParams(lp);
 
-        loadingSpinner = new ProgressBar(activity);
-        FrameLayout.LayoutParams spinLp = new FrameLayout.LayoutParams(dp(38), dp(38), Gravity.CENTER);
-        loadingSpinner.setVisibility(View.GONE);
-        root.addView(loadingSpinner, spinLp);
-
-        // 2. Top Overlay Bar
-        topBar = new LinearLayout(activity);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-        topBar.setGravity(Gravity.CENTER_VERTICAL);
-        topBar.setBackgroundColor(Color.parseColor("#CC0B0F17"));
-        topBar.setPadding(dp(12), dp(14), dp(14), dp(12));
-
-        ImageView btnBack = new ImageView(activity);
-        btnBack.setImageDrawable(VectorIcons.create(VectorIcons.ICON_BACK, Color.WHITE, dp(24)));
-        btnBack.setPadding(dp(6), dp(6), dp(10), dp(6));
-        btnBack.setOnClickListener(new View.OnClickListener() {
+        // Back button
+        ImageView ivBack = new ImageView(activity);
+        ivBack.setImageResource(R.drawable.ic_m3_back);
+        ivBack.setColorFilter(Color.WHITE);
+        ivBack.setPadding(dp(8), dp(8), dp(8), dp(8));
+        ivBack.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                stopVideoIfAny();
                 dialog.dismiss();
             }
         });
-        topBar.addView(btnBack, new LinearLayout.LayoutParams(dp(40), dp(36)));
+        bar.addView(ivBack, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
-        LinearLayout titleCol = new LinearLayout(activity);
-        titleCol.setOrientation(LinearLayout.VERTICAL);
+        // Title and count
+        LinearLayout titleBox = new LinearLayout(activity);
+        titleBox.setOrientation(LinearLayout.VERTICAL);
+        titleBox.setPadding(dp(12), 0, dp(12), 0);
+
         tvTitle = new TextView(activity);
         tvTitle.setTextColor(Color.WHITE);
         tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
@@ -160,537 +166,538 @@ public class PhotoViewerDialog {
         tvTitle.setSingleLine(true);
         tvTitle.setEllipsize(TextUtils.TruncateAt.MIDDLE);
 
-        tvSubtitle = new TextView(activity);
-        tvSubtitle.setTextColor(Color.parseColor("#CBD5E1"));
-        tvSubtitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-        tvSubtitle.setSingleLine(true);
+        tvSub = new TextView(activity);
+        tvSub.setTextColor(Color.parseColor("#B0BEC5"));
+        tvSub.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
 
-        titleCol.addView(tvTitle);
-        titleCol.addView(tvSubtitle);
-        topBar.addView(titleCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        titleBox.addView(tvTitle);
+        titleBox.addView(tvSub);
 
-        root.addView(topBar, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
+        LinearLayout.LayoutParams tblp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        bar.addView(titleBox, tblp);
 
-        // 3. Bottom Overlay Container (Video Scrubbing Bar + Action Icons Bar)
-        LinearLayout bottomOverlay = new LinearLayout(activity);
-        bottomOverlay.setOrientation(LinearLayout.VERTICAL);
-        bottomOverlay.setBackgroundColor(Color.parseColor("#CC0B0F17"));
-
-        // Video Playback Scrubbing Bar (shown only for videos)
-        videoControlsBar = new LinearLayout(activity);
-        videoControlsBar.setOrientation(LinearLayout.HORIZONTAL);
-        videoControlsBar.setGravity(Gravity.CENTER_VERTICAL);
-        videoControlsBar.setPadding(dp(14), dp(10), dp(14), dp(4));
-        videoControlsBar.setVisibility(View.GONE);
-
-        btnVideoPlayPause = new TextView(activity);
-        btnVideoPlayPause.setText("⏸");
-        btnVideoPlayPause.setTextColor(Color.WHITE);
-        btnVideoPlayPause.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
-        btnVideoPlayPause.setPadding(dp(6), dp(2), dp(10), dp(2));
-        btnVideoPlayPause.setOnClickListener(new View.OnClickListener() {
+        // Info button
+        ImageView ivInfo = new ImageView(activity);
+        ivInfo.setImageResource(R.drawable.ic_m3_info);
+        ivInfo.setColorFilter(Color.WHITE);
+        ivInfo.setPadding(dp(8), dp(8), dp(8), dp(8));
+        ivInfo.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (activeVideoView != null) {
-                    if (activeVideoView.isPlaying()) {
-                        activeVideoView.pause();
-                        btnVideoPlayPause.setText("▶");
-                    } else {
-                        activeVideoView.start();
-                        btnVideoPlayPause.setText("⏸");
-                    }
-                }
+                showExifBottomSheet(items.get(currentIndex));
             }
         });
-        videoControlsBar.addView(btnVideoPlayPause);
+        bar.addView(ivInfo, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
-        videoSeekBar = new SeekBar(activity);
-        videoSeekBar.setMax(1000);
-        videoSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (fromUser && activeVideoView != null && activeVideoView.getDuration() > 0) {
-                    int pos = (int) ((progress / 1000f) * activeVideoView.getDuration());
-                    activeVideoView.seekTo(pos);
-                }
-            }
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-        });
-        videoControlsBar.addView(videoSeekBar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
-
-        tvVideoTime = new TextView(activity);
-        tvVideoTime.setText("00:00 / 00:00");
-        tvVideoTime.setTextColor(Color.parseColor("#E2E8F0"));
-        tvVideoTime.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-        tvVideoTime.setPadding(dp(8), 0, 0, 0);
-        videoControlsBar.addView(tvVideoTime);
-
-        bottomOverlay.addView(videoControlsBar);
-
-        // 5-Action Bottom Bar (Share, Favorite, Backup/Download, Info, Delete)
-        bottomBar = new LinearLayout(activity);
-        bottomBar.setOrientation(LinearLayout.HORIZONTAL);
-        bottomBar.setGravity(Gravity.CENTER);
-        bottomBar.setPadding(dp(8), dp(10), dp(8), dp(14));
-
-        LinearLayout actShare = createBottomActionItem(VectorIcons.ICON_SHARE, "分享");
-        actShare.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                shareCurrentItem();
-            }
-        });
-
-        LinearLayout actFav = createBottomActionItem(VectorIcons.ICON_HEART_OUTLINE, "收藏");
-        ivFavIcon = (ImageView) actFav.getChildAt(0);
-        tvFavLabel = (TextView) actFav.getChildAt(1);
-        actFav.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                MainActivity.GalleryItem item = items.get(currentIndex);
-                callbacks.toggleFavorite(item.getUniqueKey());
-                updateBottomBarState(item);
-            }
-        });
-
-        LinearLayout actCloud = createBottomActionItem(VectorIcons.ICON_CLOUD_UPLOAD, "备份");
-        ivCloudActionIcon = (ImageView) actCloud.getChildAt(0);
-        tvCloudActionLabel = (TextView) actCloud.getChildAt(1);
-        actCloud.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                MainActivity.GalleryItem item = items.get(currentIndex);
-                if (item.isOnCloud) {
-                    callbacks.onDownloadItem(item);
-                } else {
-                    callbacks.onUploadItem(item);
-                }
-            }
-        });
-
-        LinearLayout actInfo = createBottomActionItem(VectorIcons.ICON_INFO, "详情");
-        actInfo.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showExifInfoDialog(items.get(currentIndex));
-            }
-        });
-
-        LinearLayout actDelete = createBottomActionItem(VectorIcons.ICON_DELETE, "删除");
-        actDelete.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                MainActivity.GalleryItem item = items.get(currentIndex);
-                stopVideoIfAny();
-                callbacks.onDeleteItem(item);
-                if (items.isEmpty()) {
-                    dialog.dismiss();
-                } else {
-                    if (currentIndex >= items.size()) currentIndex = items.size() - 1;
-                    bindPageData();
-                }
-            }
-        });
-
-        bottomBar.addView(actShare, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        bottomBar.addView(actFav, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        bottomBar.addView(actCloud, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        bottomBar.addView(actInfo, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        bottomBar.addView(actDelete, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        bottomOverlay.addView(bottomBar);
-        root.addView(bottomOverlay, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
-
-        dialog.setContentView(root);
-        dialog.show();
-        bindPageData();
+        return bar;
     }
 
-    private LinearLayout createBottomActionItem(int iconType, String label) {
-        LinearLayout col = new LinearLayout(activity);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setGravity(Gravity.CENTER);
+    private View buildBottomBar() {
+        LinearLayout bar = new LinearLayout(activity);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER);
+        bar.setPadding(dp(16), dp(16), dp(16), dp(28));
+        bar.setBackground(makeGradient(Color.TRANSPARENT, Color.parseColor("#CC000000")));
+
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.gravity = Gravity.BOTTOM;
+        bar.setLayoutParams(lp);
+
+        // Share
+        bar.addView(createBottomAction(R.drawable.ic_m3_share, "分享", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                shareCurrentItem(items.get(currentIndex));
+            }
+        }));
+
+        // Favorite
+        ivFavorite = new ImageView(activity);
+        ivFavorite.setImageResource(R.drawable.ic_m3_star);
+        ivFavorite.setColorFilter(Color.WHITE);
+        ivFavorite.setPadding(dp(10), dp(10), dp(10), dp(10));
+        LinearLayout favBox = createActionBox(ivFavorite, "收藏", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                MainActivity.GalleryItem cur = items.get(currentIndex);
+                boolean wasFav = callbacks != null && callbacks.isFavorite(cur);
+                boolean nowFav = !wasFav;
+                if (callbacks != null) callbacks.onToggleFavorite(cur, nowFav);
+                updateFavoriteIcon(nowFav);
+                Toast.makeText(activity, nowFav ? "已加入我的收藏 ⭐" : "已移出收藏", Toast.LENGTH_SHORT).show();
+            }
+        });
+        bar.addView(favBox);
+
+        // Cloud Upload/Download
+        ivActionCloud = new ImageView(activity);
+        ivActionCloud.setImageResource(R.drawable.ic_m3_cloud_upload);
+        ivActionCloud.setColorFilter(Color.WHITE);
+        ivActionCloud.setPadding(dp(10), dp(10), dp(10), dp(10));
+        LinearLayout cloudBox = createActionBox(ivActionCloud, "云端", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                MainActivity.GalleryItem cur = items.get(currentIndex);
+                if (cur.isLocalOnly()) {
+                    if (callbacks != null) callbacks.onUploadItem(cur);
+                    Toast.makeText(activity, "已加入直传队列: " + cur.name, Toast.LENGTH_SHORT).show();
+                } else {
+                    if (callbacks != null) callbacks.onDownloadItem(cur);
+                    Toast.makeText(activity, "正在下载原图...", Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
+        bar.addView(cloudBox);
+
+        // Delete
+        bar.addView(createBottomAction(R.drawable.ic_m3_delete, "删除", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                final MainActivity.GalleryItem cur = items.get(currentIndex);
+                new AlertDialog.Builder(activity)
+                        .setTitle("确认删除")
+                        .setMessage("确定要从云相册中删除此" + (cur.isVideo ? "视频" : "照片") + "吗？\n" + cur.name)
+                        .setPositiveButton("删除", new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface d, int which) {
+                                if (callbacks != null) {
+                                    callbacks.onDeleteItem(cur, new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            activity.runOnUiThread(new Runnable() {
+                                                @Override
+                                                public void run() {
+                                                    items.remove(currentIndex);
+                                                    if (items.isEmpty()) {
+                                                        dialog.dismiss();
+                                                    } else {
+                                                        currentIndex = Math.min(currentIndex, items.size() - 1);
+                                                        viewPager.setAdapter(new MediaPagerAdapter());
+                                                        viewPager.setCurrentItem(currentIndex, false);
+                                                        updateBarInfo(currentIndex);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    });
+                                }
+                            }
+                        })
+                        .setNegativeButton("取消", null)
+                        .show();
+            }
+        }));
+
+        return bar;
+    }
+
+    private LinearLayout createBottomAction(int iconRes, String title, View.OnClickListener l) {
         ImageView iv = new ImageView(activity);
-        iv.setImageDrawable(VectorIcons.create(iconType, Color.WHITE, dp(22)));
+        iv.setImageResource(iconRes);
+        iv.setColorFilter(Color.WHITE);
+        iv.setPadding(dp(10), dp(10), dp(10), dp(10));
+        return createActionBox(iv, title, l);
+    }
+
+    private LinearLayout createActionBox(ImageView iv, String title, View.OnClickListener l) {
+        LinearLayout box = new LinearLayout(activity);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        box.setPadding(dp(14), dp(4), dp(14), dp(4));
+
         TextView tv = new TextView(activity);
-        tv.setText(label);
-        tv.setTextColor(Color.parseColor("#E2E8F0"));
+        tv.setText(title);
+        tv.setTextColor(Color.parseColor("#B0BEC5"));
         tv.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-        tv.setPadding(0, dp(4), 0, 0);
-        col.addView(iv, new LinearLayout.LayoutParams(dp(24), dp(24)));
-        col.addView(tv);
-        return col;
+
+        box.addView(iv, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        box.addView(tv);
+        box.setOnClickListener(l);
+        return box;
+    }
+
+    private void updateBarInfo(int pos) {
+        if (pos < 0 || pos >= items.size()) return;
+        MainActivity.GalleryItem cur = items.get(pos);
+
+        tvTitle.setText(cur.name);
+        tvSub.setText((pos + 1) + " / " + items.size() + (cur.isLocalOnly() ? " · 仅本地" : " · Google Drive 已归档"));
+
+        boolean isFav = callbacks != null && callbacks.isFavorite(cur);
+        updateFavoriteIcon(isFav);
+
+        if (cur.isLocalOnly()) {
+            ivActionCloud.setImageResource(R.drawable.ic_m3_cloud_upload);
+        } else {
+            ivActionCloud.setImageResource(R.drawable.ic_m3_download);
+        }
+    }
+
+    private void updateFavoriteIcon(boolean isFav) {
+        if (ivFavorite != null) {
+            ivFavorite.setImageResource(isFav ? R.drawable.ic_m3_star_filled : R.drawable.ic_m3_star);
+            ivFavorite.setColorFilter(isFav ? Color.parseColor("#FDD835") : Color.WHITE);
+        }
     }
 
     private void toggleBars() {
         barsVisible = !barsVisible;
-        float alpha = barsVisible ? 1.0f : 0.0f;
-        topBar.animate().alpha(alpha).setDuration(180).withEndAction(new Runnable() {
-            @Override
-            public void run() {
-                topBar.setVisibility(barsVisible ? View.VISIBLE : View.GONE);
+        topBar.setVisibility(barsVisible ? View.VISIBLE : View.GONE);
+        bottomBar.setVisibility(barsVisible ? View.VISIBLE : View.GONE);
+    }
+
+    private void shareCurrentItem(MainActivity.GalleryItem item) {
+        try {
+            if (item.uri != null) {
+                Intent intent = new Intent(Intent.ACTION_SEND);
+                intent.setType(item.isVideo ? "video/*" : "image/*");
+                intent.putExtra(Intent.EXTRA_STREAM, item.uri);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                activity.startActivity(Intent.createChooser(intent, "分享"));
+            } else if (!TextUtils.isEmpty(item.cloudUrl)) {
+                Intent intent = new Intent(Intent.ACTION_SEND);
+                intent.setType("text/plain");
+                intent.putExtra(Intent.EXTRA_TEXT, item.name + "\n" + item.cloudUrl);
+                activity.startActivity(Intent.createChooser(intent, "分享链接"));
             }
-        }).start();
-        if (barsVisible) topBar.setVisibility(View.VISIBLE);
-
-        View botParent = (View) bottomBar.getParent();
-        botParent.animate().alpha(alpha).setDuration(180).withEndAction(new Runnable() {
-            @Override
-            public void run() {
-                ((View) bottomBar.getParent()).setVisibility(barsVisible ? View.VISIBLE : View.GONE);
-            }
-        }).start();
-        if (barsVisible) botParent.setVisibility(View.VISIBLE);
-    }
-
-    private void updateBottomBarState(MainActivity.GalleryItem item) {
-        boolean fav = callbacks.isFavorite(item.getUniqueKey());
-        ivFavIcon.setImageDrawable(VectorIcons.create(
-                fav ? VectorIcons.ICON_HEART_FILLED : VectorIcons.ICON_HEART_OUTLINE,
-                fav ? Color.parseColor("#F43F5E") : Color.WHITE,
-                dp(22)
-        ));
-        tvFavLabel.setText(fav ? "已收藏" : "收藏");
-
-        if (item.isOnCloud) {
-            ivCloudActionIcon.setImageDrawable(VectorIcons.create(VectorIcons.ICON_DOWNLOAD, Color.WHITE, dp(22)));
-            tvCloudActionLabel.setText("下载原片");
-        } else {
-            ivCloudActionIcon.setImageDrawable(VectorIcons.create(VectorIcons.ICON_CLOUD_UPLOAD, Color.parseColor("#38BDF8"), dp(22)));
-            tvCloudActionLabel.setText("备份上云");
+        } catch (Exception e) {
+            Toast.makeText(activity, "分享失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
-    }
-
-    private void bindPageData() {
-        stopVideoIfAny();
-        if (items.isEmpty()) return;
-
-        final MainActivity.GalleryItem curr = items.get(currentIndex);
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy年MM月dd日 HH:mm", Locale.getDefault());
-        tvTitle.setText(sdf.format(new Date(curr.timestampMs)));
-        String statusStr = curr.isOnCloud ? (curr.localUri != null ? "已备份至云端" : "云端原片") : "仅在手机本地";
-        tvSubtitle.setText((currentIndex + 1) + " / " + items.size() + "  ·  " + statusStr);
-
-        updateBottomBarState(curr);
-
-        // Reset positions
-        int w = stageLayout.getWidth() > 0 ? stageLayout.getWidth() : activity.getResources().getDisplayMetrics().widthPixels;
-        prevImageView.resetZoom();
-        currImageView.resetZoom();
-        nextImageView.resetZoom();
-        prevImageView.setTranslationX(-w);
-        currImageView.setTranslationX(0);
-        nextImageView.setTranslationX(w);
-
-        // Bind neighbor thumbnails for instant finger-following preview
-        if (currentIndex > 0) {
-            MainActivity.GalleryItem prev = items.get(currentIndex - 1);
-            prevImageView.setImageBitmap(callbacks.getCachedThumb(prev.getUniqueKey()));
-        } else {
-            prevImageView.setImageBitmap(null);
-        }
-
-        if (currentIndex < items.size() - 1) {
-            MainActivity.GalleryItem next = items.get(currentIndex + 1);
-            nextImageView.setImageBitmap(callbacks.getCachedThumb(next.getUniqueKey()));
-        } else {
-            nextImageView.setImageBitmap(null);
-        }
-
-        // Bind current item
-        currImageView.setImageBitmap(callbacks.getCachedThumb(curr.getUniqueKey()));
-
-        if (curr.isVideo) {
-            videoControlsBar.setVisibility(View.VISIBLE);
-            startInlineVideo(curr);
-        } else {
-            videoControlsBar.setVisibility(View.GONE);
-            loadingSpinner.setVisibility(View.VISIBLE);
-            final int boundIdx = currentIndex;
-            callbacks.loadHighResBitmap(curr, new BitmapCallback() {
-                @Override
-                public void onLoaded(Bitmap bmp) {
-                    if (boundIdx == currentIndex) {
-                        loadingSpinner.setVisibility(View.GONE);
-                        if (bmp != null) {
-                            currImageView.setImageBitmap(bmp);
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    private void startInlineVideo(MainActivity.GalleryItem item) {
-        Uri playUri = item.localUri != null ? item.localUri : (item.fullUrl != null ? Uri.parse(item.fullUrl) : null);
-        if (playUri == null) return;
-
-        activeVideoView = new VideoView(activity);
-        FrameLayout.LayoutParams vLp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER);
-        stageLayout.addView(activeVideoView, vLp);
-
-        activeVideoView.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                toggleBars();
-            }
-        });
-
-        loadingSpinner.setVisibility(View.VISIBLE);
-        activeVideoView.setVideoURI(playUri);
-        activeVideoView.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
-            @Override
-            public void onPrepared(MediaPlayer mp) {
-                loadingSpinner.setVisibility(View.GONE);
-                currImageView.setVisibility(View.INVISIBLE);
-                mp.setLooping(true);
-                activeVideoView.start();
-                isVideoPlaying = true;
-                btnVideoPlayPause.setText("⏸");
-                startVideoProgressUpdater();
-            }
-        });
-        activeVideoView.setOnErrorListener(new MediaPlayer.OnErrorListener() {
-            @Override
-            public boolean onError(MediaPlayer mp, int what, int extra) {
-                loadingSpinner.setVisibility(View.GONE);
-                Toast.makeText(activity, "视频加载中或需外部解码器播放", Toast.LENGTH_SHORT).show();
-                return true;
-            }
-        });
-    }
-
-    private void startVideoProgressUpdater() {
-        if (videoProgressRunnable != null) handler.removeCallbacks(videoProgressRunnable);
-        videoProgressRunnable = new Runnable() {
-            @Override
-            public void run() {
-                if (activeVideoView != null && isVideoPlaying) {
-                    try {
-                        int cur = activeVideoView.getCurrentPosition();
-                        int dur = activeVideoView.getDuration();
-                        if (dur > 0) {
-                            videoSeekBar.setProgress((int) ((cur * 1000L) / dur));
-                            tvVideoTime.setText(formatMs(cur) + " / " + formatMs(dur));
-                        }
-                    } catch (Exception ignored) {}
-                    handler.postDelayed(this, 300);
-                }
-            }
-        };
-        handler.post(videoProgressRunnable);
-    }
-
-    private void stopVideoIfAny() {
-        isVideoPlaying = false;
-        if (videoProgressRunnable != null) {
-            handler.removeCallbacks(videoProgressRunnable);
-        }
-        currImageView.setVisibility(View.VISIBLE);
-        if (activeVideoView != null) {
-            try {
-                activeVideoView.stopPlayback();
-                stageLayout.removeView(activeVideoView);
-            } catch (Exception ignored) {}
-            activeVideoView = null;
-        }
-    }
-
-    private String formatMs(int ms) {
-        int totalSec = Math.max(0, ms / 1000);
-        int m = totalSec / 60;
-        int s = totalSec % 60;
-        return String.format(Locale.US, "%02d:%02d", m, s);
-    }
-
-    private void shareCurrentItem() {
-        MainActivity.GalleryItem item = items.get(currentIndex);
-        if (item.localUri != null) {
-            try {
-                Intent share = new Intent(Intent.ACTION_SEND);
-                share.setType(item.isVideo ? "video/*" : "image/*");
-                share.putExtra(Intent.EXTRA_STREAM, item.localUri);
-                share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                activity.startActivity(Intent.createChooser(share, "分享原文件"));
-                return;
-            } catch (Exception ignored) {}
-        }
-        if (item.downloadUrl != null && !item.downloadUrl.isEmpty()) {
-            ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
-            if (cm != null) {
-                cm.setPrimaryClip(ClipData.newPlainText("云相册直链", item.downloadUrl));
-                Toast.makeText(activity, "已复制国内免梯高速直链，可直接粘贴分享给好友", Toast.LENGTH_LONG).show();
-            }
-        }
-    }
-
-    private void showExifInfoDialog(MainActivity.GalleryItem item) {
-        StringBuilder info = new StringBuilder();
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
-        info.append("文件名称：").append(item.name).append("\n\n");
-        info.append("拍摄时间：").append(sdf.format(new Date(item.timestampMs))).append("\n\n");
-        info.append("文件大小：").append(String.format(Locale.US, "%.2f MB (%d 字节)", item.size / 1048576.0, item.size)).append("\n\n");
-        info.append("所属相册：").append(item.bucket != null ? item.bucket : "云端相册").append("\n\n");
-        info.append("备份状态：").append(item.isOnCloud ? "已安全备份至 Google Drive" : "仅保存在手机本地").append("\n\n");
-
-        if (item.localUri != null && !item.isVideo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            try {
-                InputStream in = activity.getContentResolver().openInputStream(item.localUri);
-                if (in != null) {
-                    ExifInterface exif = new ExifInterface(in);
-                    String w = exif.getAttribute(ExifInterface.TAG_IMAGE_WIDTH);
-                    String h = exif.getAttribute(ExifInterface.TAG_IMAGE_LENGTH);
-                    String make = exif.getAttribute(ExifInterface.TAG_MAKE);
-                    String model = exif.getAttribute(ExifInterface.TAG_MODEL);
-                    String fnum = exif.getAttribute(ExifInterface.TAG_F_NUMBER);
-                    String iso = exif.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS);
-                    String exp = exif.getAttribute(ExifInterface.TAG_EXPOSURE_TIME);
-                    if (w != null && h != null && !"0".equals(w)) {
-                        info.append("图像尺寸：").append(w).append(" × ").append(h).append(" px\n\n");
-                    }
-                    if (make != null || model != null) {
-                        info.append("拍摄设备：").append(make != null ? make + " " : "").append(model != null ? model : "").append("\n\n");
-                    }
-                    if (fnum != null || iso != null) {
-                        info.append("镜头参数：");
-                        if (fnum != null) info.append("f/").append(fnum).append("  ");
-                        if (exp != null) info.append(exp).append("s  ");
-                        if (iso != null) info.append("ISO ").append(iso);
-                        info.append("\n\n");
-                    }
-                    in.close();
-                }
-            } catch (Exception ignored) {}
-        }
-
-        if (item.cloudPath != null) {
-            info.append("云端路径：").append(item.cloudPath);
-        }
-
-        new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("照片详细信息")
-                .setMessage(info.toString().trim())
-                .setPositiveButton("确定", null)
-                .show();
     }
 
     /**
-     * Custom FrameLayout that intercepts horizontal swipes when ZoomableImageView is not panning,
-     * moving prev/curr/next views 1:1 with the user's finger and animating snap transitions.
+     * Google Photos-style M3 BottomSheetDialog for EXIF & Cloud Metadata.
      */
-    private class SwipeStageLayout extends FrameLayout {
-        private float downX, downY, lastX;
-        private boolean isSwiping = false;
-        private final int touchSlop;
-        private VelocityTracker velocityTracker;
+    private void showExifBottomSheet(MainActivity.GalleryItem item) {
+        BottomSheetDialog bs = new BottomSheetDialog(activity);
+        LinearLayout root = new LinearLayout(activity);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(Color.parseColor("#1E2025")); // M3 Surface Container
+        root.setPadding(dp(20), dp(12), dp(20), dp(28));
 
-        public SwipeStageLayout(Context context) {
-            super(context);
-            touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
-        }
+        // Drag handle
+        View handle = new View(activity);
+        handle.setBackground(makeRoundRect("#8E9099", dp(2)));
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(dp(36), dp(4));
+        hlp.gravity = Gravity.CENTER_HORIZONTAL;
+        hlp.bottomMargin = dp(16);
+        root.addView(handle, hlp);
 
-        @Override
-        public boolean onInterceptTouchEvent(MotionEvent ev) {
-            int action = ev.getActionMasked();
-            if (ev.getPointerCount() > 1) {
-                isSwiping = false;
-                return false;
-            }
+        TextView tvH = new TextView(activity);
+        tvH.setText("详细参数 (EXIF / 云存储)");
+        tvH.setTextColor(Color.parseColor("#E2E2E9"));
+        tvH.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17);
+        tvH.setTypeface(null, Typeface.BOLD);
+        tvH.setPadding(0, 0, 0, dp(14));
+        root.addView(tvH);
 
-            switch (action) {
-                case MotionEvent.ACTION_DOWN:
-                    downX = lastX = ev.getX();
-                    downY = ev.getY();
-                    isSwiping = false;
-                    if (velocityTracker == null) velocityTracker = VelocityTracker.obtain();
-                    else velocityTracker.clear();
-                    velocityTracker.addMovement(ev);
-                    break;
+        // Fetch EXIF
+        String camera = "未知相机";
+        String params = "";
+        String resolution = "";
+        if (item.uri != null) {
+            try (InputStream is = activity.getContentResolver().openInputStream(item.uri)) {
+                if (is != null) {
+                    ExifInterface exif = new ExifInterface(is);
+                    String make = exif.getAttribute(ExifInterface.TAG_MAKE);
+                    String model = exif.getAttribute(ExifInterface.TAG_MODEL);
+                    if (model != null) camera = (make != null ? make + " " : "") + model;
 
-                case MotionEvent.ACTION_MOVE:
-                    float dx = ev.getX() - downX;
-                    float dy = ev.getY() - downY;
-                    if (Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy) * 1.2f) {
-                        // Check if current ZoomableImageView can still pan in this direction
-                        if (!currImageView.canPanHorizontally((int) -dx)) {
-                            isSwiping = true;
-                            lastX = ev.getX();
-                            return true;
+                    String f = exif.getAttribute(ExifInterface.TAG_F_NUMBER);
+                    String exp = exif.getAttribute(ExifInterface.TAG_EXPOSURE_TIME);
+                    String focal = exif.getAttribute(ExifInterface.TAG_FOCAL_LENGTH);
+                    String iso = exif.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS);
+                    StringBuilder pb = new StringBuilder();
+                    if (f != null) pb.append("f/").append(f).append("  ");
+                    if (exp != null) {
+                        try {
+                            double ev = Double.parseDouble(exp);
+                            if (ev < 1.0 && ev > 0) pb.append("1/").append((int) Math.round(1.0 / ev)).append("s  ");
+                            else pb.append(exp).append("s  ");
+                        } catch (Exception ignored) {
+                            pb.append(exp).append("  ");
                         }
                     }
-                    break;
-            }
-            return false;
-        }
+                    if (focal != null) pb.append(focal).append("mm  ");
+                    if (iso != null) pb.append("ISO").append(iso);
+                    params = pb.toString().trim();
 
-        @Override
-        public boolean onTouchEvent(MotionEvent ev) {
-            if (velocityTracker != null) velocityTracker.addMovement(ev);
-            int w = getWidth();
-            if (w <= 0) return true;
-
-            switch (ev.getActionMasked()) {
-                case MotionEvent.ACTION_MOVE:
-                    float offset = ev.getX() - downX;
-                    // Add resistance at first/last item
-                    if ((currentIndex == 0 && offset > 0) || (currentIndex == items.size() - 1 && offset < 0)) {
-                        offset *= 0.32f;
+                    int w = exif.getAttributeInt(ExifInterface.TAG_IMAGE_WIDTH, 0);
+                    int h = exif.getAttributeInt(ExifInterface.TAG_IMAGE_LENGTH, 0);
+                    if (w > 0 && h > 0) {
+                        double mp = (w * h) / 1000000.0;
+                        resolution = w + " × " + h + String.format(Locale.US, " (%.1f MP)", mp);
                     }
-                    prevImageView.setTranslationX(-w + offset);
-                    currImageView.setTranslationX(offset);
-                    nextImageView.setTranslationX(w + offset);
-                    break;
-
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    float totalDx = ev.getX() - downX;
-                    float vx = 0;
-                    if (velocityTracker != null) {
-                        velocityTracker.computeCurrentVelocity(1000);
-                        vx = velocityTracker.getXVelocity();
-                    }
-                    int targetDelta = 0;
-                    if ((totalDx < -w * 0.22f || vx < -650) && currentIndex < items.size() - 1) {
-                        targetDelta = 1;
-                    } else if ((totalDx > w * 0.22f || vx > 650) && currentIndex > 0) {
-                        targetDelta = -1;
-                    }
-                    animateToPage(targetDelta, totalDx, w);
-                    isSwiping = false;
-                    break;
-            }
-            return true;
-        }
-
-        private void animateToPage(final int deltaIdx, float startOffset, final int width) {
-            float endOffset = deltaIdx == 1 ? -width : (deltaIdx == -1 ? width : 0);
-            ValueAnimator anim = ValueAnimator.ofFloat(startOffset, endOffset);
-            anim.setDuration(210);
-            anim.setInterpolator(new DecelerateInterpolator());
-            anim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
-                @Override
-                public void onAnimationUpdate(ValueAnimator animation) {
-                    float val = (Float) animation.getAnimatedValue();
-                    prevImageView.setTranslationX(-width + val);
-                    currImageView.setTranslationX(val);
-                    nextImageView.setTranslationX(width + val);
                 }
-            });
-            anim.addListener(new AnimatorListenerAdapter() {
+            } catch (Exception ignored) {}
+        }
+
+        root.addView(makeInfoRow("文件名称", item.name));
+        if (item.dateTaken > 0) {
+            String dateStr = new SimpleDateFormat("yyyy年M月d日 HH:mm:ss", Locale.getDefault()).format(new Date(item.dateTaken));
+            root.addView(makeInfoRow("拍摄时间", dateStr));
+        }
+        if (!camera.equals("未知相机")) root.addView(makeInfoRow("拍摄设备", camera));
+        if (!params.isEmpty()) root.addView(makeInfoRow("曝光参数", params));
+        if (!resolution.isEmpty()) root.addView(makeInfoRow("画面尺寸", resolution));
+        if (item.size > 0) root.addView(makeInfoRow("文件大小", formatSize(item.size)));
+        root.addView(makeInfoRow("存储类型", item.isLocalOnly() ? "仅保存在本机相册" : "已直传并归档至 Google Drive"));
+
+        if (!TextUtils.isEmpty(item.cloudUrl)) {
+            TextView btnCopy = new TextView(activity);
+            btnCopy.setText("📋 复制云端直链");
+            btnCopy.setTextColor(Color.parseColor("#A8C7FA"));
+            btnCopy.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
+            btnCopy.setTypeface(null, Typeface.BOLD);
+            btnCopy.setPadding(dp(14), dp(10), dp(14), dp(10));
+            btnCopy.setBackground(makeRoundRect("#282A2F", dp(8)));
+            btnCopy.setGravity(Gravity.CENTER);
+            btnCopy.setOnClickListener(new View.OnClickListener() {
                 @Override
-                public void onAnimationEnd(Animator animation) {
-                    if (deltaIdx != 0) {
-                        currentIndex += deltaIdx;
-                        bindPageData();
+                public void onClick(View v) {
+                    ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        cm.setPrimaryClip(ClipData.newPlainText("URL", item.cloudUrl));
+                        Toast.makeText(activity, "已复制云端链接", Toast.LENGTH_SHORT).show();
                     }
                 }
             });
-            anim.start();
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            clp.topMargin = dp(16);
+            root.addView(btnCopy, clp);
         }
+
+        bs.setContentView(root);
+        bs.show();
+    }
+
+    private LinearLayout makeInfoRow(String label, String value) {
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(0, dp(6), 0, dp(6));
+
+        TextView tvL = new TextView(activity);
+        tvL.setText(label);
+        tvL.setTextColor(Color.parseColor("#8E9099"));
+        tvL.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
+
+        TextView tvV = new TextView(activity);
+        tvV.setText(value);
+        tvV.setTextColor(Color.parseColor("#E2E2E9"));
+        tvV.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
+        tvV.setTypeface(null, Typeface.BOLD);
+
+        row.addView(tvL);
+        row.addView(tvV);
+        return row;
+    }
+
+    private String formatSize(long bytes) {
+        if (bytes <= 0) return "0 B";
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format(Locale.US, "%.1f KB", bytes / 1024.0);
+        if (bytes < 1024 * 1024 * 1024) return String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0));
+        return String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+    }
+
+    private GradientDrawable makeGradient(int startColor, int endColor) {
+        GradientDrawable gd = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{startColor, endColor});
+        return gd;
+    }
+
+    private GradientDrawable makeRoundRect(String colorHex, int radiusPx) {
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(Color.parseColor(colorHex));
+        gd.setCornerRadius(radiusPx);
+        return gd;
     }
 
     private int dp(int v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, activity.getResources().getDisplayMetrics());
+    }
+
+    /**
+     * ViewPager2 Adapter combining PhotoView & VideoView with Glide loading.
+     */
+    private class MediaPagerAdapter extends RecyclerView.Adapter<MediaPagerAdapter.MediaViewHolder> {
+
+        @NonNull
+        @Override
+        public MediaViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            FrameLayout frame = new FrameLayout(parent.getContext());
+            frame.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            frame.setBackgroundColor(Color.BLACK);
+            return new MediaViewHolder(frame);
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull MediaViewHolder holder, int position) {
+            holder.bind(items.get(position));
+        }
+
+        @Override
+        public int getItemCount() {
+            return items.size();
+        }
+
+        class MediaViewHolder extends RecyclerView.ViewHolder {
+            final FrameLayout root;
+            PhotoView photoView;
+            VideoView videoView;
+            ProgressBar progress;
+            ImageView ivPlayBtn;
+            SeekBar seekBar;
+            TextView tvTime;
+            LinearLayout videoControls;
+            final Handler timeHandler = new Handler(Looper.getMainLooper());
+            Runnable timeUpdater;
+
+            MediaViewHolder(FrameLayout root) {
+                super(root);
+                this.root = root;
+            }
+
+            void bind(final MainActivity.GalleryItem item) {
+                root.removeAllViews();
+                if (timeUpdater != null) timeHandler.removeCallbacks(timeUpdater);
+
+                progress = new ProgressBar(activity);
+                FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(dp(44), dp(44), Gravity.CENTER);
+                root.addView(progress, plp);
+
+                if (!item.isVideo) {
+                    // PhotoView for image
+                    photoView = new PhotoView(activity);
+                    photoView.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                    photoView.setMaximumScale(5.0f);
+                    photoView.setMediumScale(2.5f);
+                    photoView.setMinimumScale(1.0f);
+                    photoView.setOnPhotoTapListener((view, x, y) -> toggleBars());
+                    photoView.setOnViewTapListener((view, x, y) -> toggleBars());
+
+                    root.addView(photoView);
+
+                    Object model = item.uri != null ? item.uri : item.cloudUrl;
+                    Glide.with(activity)
+                            .load(model)
+                            .diskCacheStrategy(DiskCacheStrategy.ALL)
+                            .into(photoView);
+
+                    progress.setVisibility(View.GONE);
+                } else {
+                    // Video View
+                    videoView = new VideoView(activity);
+                    FrameLayout.LayoutParams vlp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+                    root.addView(videoView, vlp);
+
+                    ivPlayBtn = new ImageView(activity);
+                    ivPlayBtn.setImageResource(R.drawable.ic_m3_play);
+                    ivPlayBtn.setColorFilter(Color.WHITE);
+                    ivPlayBtn.setBackground(makeRoundRect("#80000000", dp(36)));
+                    ivPlayBtn.setPadding(dp(18), dp(18), dp(18), dp(18));
+                    FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER);
+                    root.addView(ivPlayBtn, blp);
+
+                    // Video Seek bar overlay
+                    videoControls = new LinearLayout(activity);
+                    videoControls.setOrientation(LinearLayout.HORIZONTAL);
+                    videoControls.setGravity(Gravity.CENTER_VERTICAL);
+                    videoControls.setPadding(dp(16), dp(8), dp(16), dp(8));
+                    videoControls.setBackground(makeRoundRect("#80000000", dp(20)));
+
+                    seekBar = new SeekBar(activity);
+                    LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+                    videoControls.addView(seekBar, slp);
+
+                    tvTime = new TextView(activity);
+                    tvTime.setTextColor(Color.WHITE);
+                    tvTime.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
+                    tvTime.setText("00:00");
+                    videoControls.addView(tvTime);
+
+                    FrameLayout.LayoutParams vclp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    vclp.gravity = Gravity.BOTTOM;
+                    vclp.bottomMargin = dp(88);
+                    vclp.leftMargin = dp(20);
+                    vclp.rightMargin = dp(20);
+                    root.addView(videoControls, vclp);
+
+                    Uri videoUri = item.uri != null ? item.uri : Uri.parse(item.cloudUrl);
+                    videoView.setVideoURI(videoUri);
+                    progress.setVisibility(View.GONE);
+
+                    videoView.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+                        @Override
+                        public void onPrepared(MediaPlayer mp) {
+                            seekBar.setMax(videoView.getDuration());
+                        }
+                    });
+
+                    videoView.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                        @Override
+                        public void onCompletion(MediaPlayer mp) {
+                            ivPlayBtn.setVisibility(View.VISIBLE);
+                        }
+                    });
+
+                    ivPlayBtn.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            if (!videoView.isPlaying()) {
+                                videoView.start();
+                                ivPlayBtn.setVisibility(View.GONE);
+                                startTimeUpdater();
+                            }
+                        }
+                    });
+
+                    root.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            if (videoView.isPlaying()) {
+                                videoView.pause();
+                                ivPlayBtn.setVisibility(View.VISIBLE);
+                            } else {
+                                toggleBars();
+                            }
+                        }
+                    });
+
+                    seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                        @Override
+                        public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                            if (fromUser) {
+                                videoView.seekTo(p);
+                                tvTime.setText(formatDuration(p));
+                            }
+                        }
+                        @Override public void onStartTrackingTouch(SeekBar sb) {}
+                        @Override public void onStopTrackingTouch(SeekBar sb) {}
+                    });
+                }
+            }
+
+            void startTimeUpdater() {
+                timeUpdater = new Runnable() {
+                    @Override
+                    public void run() {
+                        if (videoView != null && videoView.isPlaying()) {
+                            int cur = videoView.getCurrentPosition();
+                            seekBar.setProgress(cur);
+                            tvTime.setText(formatDuration(cur));
+                            timeHandler.postDelayed(this, 500);
+                        }
+                    }
+                };
+                timeHandler.post(timeUpdater);
+            }
+
+            String formatDuration(int ms) {
+                int sec = ms / 1000;
+                int m = sec / 60;
+                int s = sec % 60;
+                return String.format(Locale.US, "%02d:%02d", m, s);
+            }
+        }
     }
 }

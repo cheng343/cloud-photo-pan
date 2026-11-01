@@ -1,18 +1,15 @@
 package top.czyxh.pan;
 
 import android.Manifest;
-import android.app.Activity;
 import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.database.Cursor;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Color;
-import android.graphics.ImageDecoder;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -23,14 +20,11 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.text.TextUtils;
-import android.util.LruCache;
-import android.util.Size;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.Window;
-import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.URLUtil;
@@ -40,25 +34,32 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
-import android.widget.GridView;
-import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
-import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.GridLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.google.android.material.bottomnavigation.BottomNavigationView;
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.materialswitch.MaterialSwitch;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -81,1308 +82,508 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-public class MainActivity extends Activity {
+/**
+ * Flagship Google MD3 (Material Design 3) Cloud Photo Gallery & Drive App.
+ * Built with Google Material Components, RecyclerView, Glide, and ViewPager2.
+ */
+public class MainActivity extends AppCompatActivity {
     private static final int REQ_PERMS = 2001;
-    private static final int REQ_PICK_MANUAL_UPLOAD = 2002;
-    private static final int REQ_WEBVIEW_FILE_CHOOSER = 2003;
+    private static final int REQ_CHOOSE_FILE = 2002;
     private static final String BASE_API = "https://pan.czyxh.top";
-    private static final String USER_AGENT = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 CloudPhotoPanApp/3.0";
 
     public static class GalleryItem {
+        public Uri uri;
         public String name;
+        public long dateTaken;
         public long size;
-        public long timestampMs;
-        public String dayGroupTitle;
         public boolean isVideo;
         public long durationMs;
-        public String bucket;
-        public Uri localUri;
-        public long mediaId;
-        public boolean isOnCloud;
-        public String cloudStatus;
-        public String cloudPath;
-        public String thumbUrl;
-        public String fullUrl;
-        public String downloadUrl;
+        public String bucketName;
+        public String cloudUrl;
+        public String localPath;
+
+        public boolean isLocalOnly() {
+            return uri != null && (cloudUrl == null || cloudUrl.isEmpty());
+        }
+
+        public boolean isCloudOnly() {
+            return uri == null && cloudUrl != null && !cloudUrl.isEmpty();
+        }
 
         public String getUniqueKey() {
-            return name != null ? name : (cloudPath != null ? cloudPath : String.valueOf(mediaId));
+            if (name != null && !name.isEmpty()) return name;
+            return uri != null ? uri.toString() : (cloudUrl != null ? cloudUrl : "");
         }
     }
 
-    public static class AlbumCardItem {
-        public String id;
-        public String title;
-        public String subtitle;
-        public int count;
-        public GalleryItem coverItem;
-        public boolean isPhoneBucket;
-        public boolean autoBackupEnabled;
+    private static class TimelineEntry {
+        static final int TYPE_HEADER = 0;
+        static final int TYPE_PHOTO = 1;
+
+        int type;
+        String headerTitle;
+        String headerSub;
+        GalleryItem item;
+        int photoIndex;
     }
 
-    // Timeline Row Model for Date-Grouped ListView (Type 0 = Date Header, Type 1 = Photo Row of N columns)
-    private static class TimelineRow {
-        boolean isHeader;
-        String dateTitle;
-        List<GalleryItem> dayItems; // all items in this date group (for header select-all)
-        List<GalleryItem> rowItems; // 3 or 4 items in this horizontal row
-        List<Integer> rowGlobalIndices;
+    private static class AlbumCard {
+        String title;
+        String countText;
+        int iconRes;
+        Uri coverUri;
+        String coverUrl;
+        String bucketName;
+        boolean isVirtual;
+        boolean autoBackup;
     }
 
-    private final List<GalleryItem> allItems = new ArrayList<>();
-    private final List<GalleryItem> filteredItems = new ArrayList<>();
-    private final List<TimelineRow> timelineRows = new ArrayList<>();
-    private final List<AlbumCardItem> albumCards = new ArrayList<>();
-    private final Set<String> selectedKeys = new HashSet<>();
+    private final ExecutorService executor = Executors.newFixedThreadPool(4);
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private boolean selectionMode = false;
-    private String currentFilter = "all";
-    private int gridColumns = 3;
+    private final List<GalleryItem> allMediaItems = new ArrayList<>();
+    private final List<TimelineEntry> timelineEntries = new ArrayList<>();
+    private final List<AlbumCard> albumCards = new ArrayList<>();
 
-    private LruCache<String, Bitmap> memoryCache;
-    private ExecutorService thumbExecutor;
-    private ExecutorService netExecutor;
-    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private FrameLayout contentFrame;
+    private BottomNavigationView bottomNav;
+    private View searchTopBar;
+    private TextView tvTopTitle;
+    private ImageView ivTopColToggle;
 
-    // Root Tab Views
-    private LinearLayout viewPhotosTab;
-    private LinearLayout viewAlbumsTab;
-    private ScrollView viewBackupTab;
+    // Tab Views
+    private SwipeRefreshLayout photosRefreshLayout;
+    private RecyclerView photosRecyclerView;
+    private TimelineAdapter timelineAdapter;
+    private GridLayoutManager photosLayoutManager;
+
+    private SwipeRefreshLayout albumsRefreshLayout;
+    private RecyclerView albumsRecyclerView;
+    private AlbumsAdapter albumsAdapter;
+
+    private ScrollView syncScrollView;
+    private LinearLayout syncContainer;
+
     private WebView alistWebView;
     private boolean alistLoaded = false;
+    private ValueCallback<Uri[]> uploadMessageCallback;
+
+    private int gridColumns = 3;
     private String currentTab = "photos";
-
-    private ImageView navIconPhotos, navIconAlbums, navIconBackup, navIconFiles;
-    private TextView navTextPhotos, navTextAlbums, navTextBackup, navTextFiles;
-
-    // Tab 1: Date-Grouped Timeline Views
-    private TextView tvTopTitle, tvCloudPill;
-    private final Map<String, TextView> filterChips = new HashMap<>();
-    private LinearLayout selectionBar;
-    private TextView tvSelectionCount;
-    private LinearLayout liveSyncBanner;
-    private TextView tvLiveSyncTitle, tvLiveSyncSpeed;
-    private ProgressBar pbLiveSync;
-    private ListView timelineListView;
-    private TextView tvEmptyState;
-    private TimelineAdapter timelineAdapter;
-
-    // Tab 2: Visual Album Cover Grid
-    private GridView albumGridView;
-    private AlbumGridAdapter albumGridAdapter;
-
-    // Tab 3: Backup & Settings Views
-    private TextView tvBkBadge, tvBkSummary, tvBkLogs;
-    private ProgressBar pbBkBar;
-    private TextView btnBkStop;
-    private Switch swAutoBackup, swWifiOnly, swIncludeVideo;
-    private LinearLayout bkFolderListLayout;
-
-    private String manualUploadTargetFolder = "/GoogleDrive/photos";
-    private ValueCallback<Uri[]> webViewFilePathCallback;
-    private boolean wasRunningLastPoll = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         gridColumns = BackupState.get(this).getGridColumns();
-        int maxMem = (int) (Runtime.getRuntime().maxMemory() / 1024);
-        int cacheSize = Math.max(10 * 1024, maxMem / 5);
-        memoryCache = new LruCache<String, Bitmap>(cacheSize) {
-            @Override
-            protected int sizeOf(String key, Bitmap bmp) {
-                return bmp.getByteCount() / 1024;
-            }
-        };
-        thumbExecutor = Executors.newFixedThreadPool(4);
-        netExecutor = Executors.newCachedThreadPool();
+        if (gridColumns < 3 || gridColumns > 4) gridColumns = 3;
 
-        Window window = getWindow();
-        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-        window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
-        window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
-        window.setStatusBarColor(Color.parseColor("#0B0F17"));
-        window.setNavigationBarColor(Color.parseColor("#111726"));
+        buildM3Layout();
+        checkPermissionsAndLoad();
+    }
 
+    private void buildM3Layout() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.parseColor("#0B0F17"));
-        root.setFitsSystemWindows(true);
+        root.setBackgroundColor(ContextCompat.getColor(this, R.color.m3_surface));
 
-        FrameLayout contentFrame = new FrameLayout(this);
-        LinearLayout.LayoutParams frameLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f
-        );
+        // Top Search Bar (Google Photos MD3 SearchBar)
+        searchTopBar = buildM3TopBar();
+        root.addView(searchTopBar);
 
-        viewPhotosTab = buildPhotosTimelineTab();
-        viewAlbumsTab = buildAlbumsGridTab();
-        viewAlbumsTab.setVisibility(View.GONE);
-        viewBackupTab = buildBackupSettingsTab();
-        viewBackupTab.setVisibility(View.GONE);
+        // Content Area
+        contentFrame = new FrameLayout(this);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f);
+        root.addView(contentFrame, clp);
 
-        alistWebView = new WebView(this);
-        configureAlistWebView(alistWebView);
-        alistWebView.setVisibility(View.GONE);
+        // Initialize Tab Views
+        setupPhotosView();
+        setupAlbumsView();
+        setupSyncView();
+        setupAlistWebView();
 
-        contentFrame.addView(viewPhotosTab, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        contentFrame.addView(viewAlbumsTab, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        contentFrame.addView(viewBackupTab, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        contentFrame.addView(alistWebView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // Bottom Navigation (MD3 NavigationBar)
+        bottomNav = new BottomNavigationView(this);
+        bottomNav.inflateMenu(R.menu.bottom_nav_menu);
+        bottomNav.setBackgroundColor(ContextCompat.getColor(this, R.color.m3_surface_container));
+        bottomNav.setItemRippleColor(ColorStateList.valueOf(Color.parseColor("#33A8C7FA")));
 
-        root.addView(contentFrame, frameLp);
+        // M3 Icon & Text Colors
+        int[][] states = new int[][]{
+                new int[]{android.R.attr.state_selected},
+                new int[]{-android.R.attr.state_selected}
+        };
+        int[] iconColors = new int[]{Color.parseColor("#C2E7FF"), Color.parseColor("#C4C6D0")};
+        int[] textColors = new int[]{Color.parseColor("#E2E2E9"), Color.parseColor("#C4C6D0")};
+        bottomNav.setItemIconTintList(new ColorStateList(states, iconColors));
+        bottomNav.setItemTextColor(new ColorStateList(states, textColors));
 
-        View divider = new View(this);
-        divider.setBackgroundColor(Color.parseColor("#1E293B"));
-        root.addView(divider, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
-
-        // Clean 4-Tab Bottom Navigation Bar with Vector Icons
-        LinearLayout bottomBar = new LinearLayout(this);
-        bottomBar.setOrientation(LinearLayout.HORIZONTAL);
-        bottomBar.setBackgroundColor(Color.parseColor("#111726"));
-        bottomBar.setGravity(Gravity.CENTER);
-
-        LinearLayout navPhotos = createVectorTabItem(VectorIcons.ICON_PHOTOS, "照片", true);
-        navIconPhotos = (ImageView) navPhotos.getChildAt(0);
-        navTextPhotos = (TextView) navPhotos.getChildAt(1);
-        navPhotos.setOnClickListener(new View.OnClickListener() {
+        bottomNav.setOnItemSelectedListener(new BottomNavigationView.OnItemSelectedListener() {
             @Override
-            public void onClick(View v) {
-                if ("photos".equals(currentTab) && !"all".equals(currentFilter)) {
-                    setGalleryFilter("all");
-                } else {
-                    selectTab("photos");
-                }
+            public boolean onNavigationItemSelected(@NonNull MenuItem item) {
+                int id = item.getItemId();
+                if (id == R.id.nav_photos) switchTab("photos");
+                else if (id == R.id.nav_albums) switchTab("albums");
+                else if (id == R.id.nav_sync) switchTab("sync");
+                else if (id == R.id.nav_drive) switchTab("drive");
+                return true;
             }
         });
 
-        LinearLayout navAlbums = createVectorTabItem(VectorIcons.ICON_ALBUMS, "相册", false);
-        navIconAlbums = (ImageView) navAlbums.getChildAt(0);
-        navTextAlbums = (TextView) navAlbums.getChildAt(1);
-        navAlbums.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                selectTab("albums");
-            }
-        });
+        root.addView(bottomNav, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(80)));
 
-        LinearLayout navBackup = createVectorTabItem(VectorIcons.ICON_CLOUD_SYNC, "云同步", false);
-        navIconBackup = (ImageView) navBackup.getChildAt(0);
-        navTextBackup = (TextView) navBackup.getChildAt(1);
-        navBackup.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                selectTab("backup");
-            }
-        });
-
-        LinearLayout navFiles = createVectorTabItem(VectorIcons.ICON_DRIVE, "网盘", false);
-        navIconFiles = (ImageView) navFiles.getChildAt(0);
-        navTextFiles = (TextView) navFiles.getChildAt(1);
-        navFiles.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                selectTab("files");
-            }
-        });
-
-        bottomBar.addView(navPhotos, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-        bottomBar.addView(navAlbums, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-        bottomBar.addView(navBackup, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-        bottomBar.addView(navFiles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-
-        root.addView(bottomBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
         setContentView(root);
-
-        requestMediaPermissionsIfNeeded();
-        loadUnifiedTimeline(false);
-
-        if (BackupState.get(this).isAutoBackupEnabled()) {
-            startBackupService(PhotoBackupService.ACTION_START_WATCHER, null);
-        }
-
-        uiHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                pollBackupStatus();
-                uiHandler.postDelayed(this, 1000);
-            }
-        }, 1000);
+        switchTab("photos");
     }
 
-    // ==================== TAB 1: CLEAN DATE-GROUPED PHOTO TIMELINE ====================
+    private View buildM3TopBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(16), dp(36), dp(16), dp(10));
+        bar.setBackgroundColor(ContextCompat.getColor(this, R.color.m3_surface));
 
-    private LinearLayout buildPhotosTimelineTab() {
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setBackgroundColor(Color.parseColor("#0B0F17"));
+        // M3 Pill Container
+        LinearLayout pill = new LinearLayout(this);
+        pill.setOrientation(LinearLayout.HORIZONTAL);
+        pill.setGravity(Gravity.CENTER_VERTICAL);
+        pill.setPadding(dp(16), dp(10), dp(16), dp(10));
+        pill.setBackground(makeRoundRect(ContextCompat.getColor(this, R.color.m3_surface_container_high), dp(28)));
 
-        // Minimalist Flagship Top Bar
-        LinearLayout topBar = new LinearLayout(this);
-        topBar.setOrientation(LinearLayout.VERTICAL);
-        topBar.setBackgroundColor(Color.parseColor("#0B0F17"));
-        topBar.setPadding(dp(16), dp(12), dp(12), dp(8));
+        // Google Photos Pinwheel / Cloud Icon
+        ImageView ivLogo = new ImageView(this);
+        ivLogo.setImageResource(R.drawable.ic_m3_photos);
+        ivLogo.setColorFilter(Color.parseColor("#A8C7FA"));
+        pill.addView(ivLogo, new LinearLayout.LayoutParams(dp(24), dp(24)));
 
-        LinearLayout row1 = new LinearLayout(this);
-        row1.setOrientation(LinearLayout.HORIZONTAL);
-        row1.setGravity(Gravity.CENTER_VERTICAL);
-
+        // Title
         tvTopTitle = new TextView(this);
-        tvTopTitle.setText("照片");
-        tvTopTitle.setTextColor(Color.WHITE);
-        tvTopTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 22);
+        tvTopTitle.setText("Google Drive 相册");
+        tvTopTitle.setTextColor(Color.parseColor("#E2E2E9"));
+        tvTopTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
         tvTopTitle.setTypeface(null, Typeface.BOLD);
-        tvTopTitle.setSingleLine(true);
-        row1.addView(tvTopTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        tvTopTitle.setPadding(dp(12), 0, dp(12), 0);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        pill.addView(tvTopTitle, tlp);
 
-        // Cloud Sync Status Pill
-        tvCloudPill = new TextView(this);
-        tvCloudPill.setText("云端已就绪");
-        tvCloudPill.setTextColor(Color.parseColor("#38BDF8"));
-        tvCloudPill.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-        tvCloudPill.setTypeface(null, Typeface.BOLD);
-        tvCloudPill.setPadding(dp(10), dp(5), dp(10), dp(5));
-        tvCloudPill.setBackground(makeRoundRect("#152238", "#1E3A5F", dp(999)));
-        tvCloudPill.setOnClickListener(new View.OnClickListener() {
+        // Column Switcher (3 / 4 columns)
+        ivTopColToggle = new ImageView(this);
+        ivTopColToggle.setImageResource(R.drawable.ic_m3_grid);
+        ivTopColToggle.setColorFilter(Color.parseColor("#C4C6D0"));
+        ivTopColToggle.setPadding(dp(4), dp(4), dp(4), dp(4));
+        ivTopColToggle.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (BackupState.get(MainActivity.this).isRunning) {
-                    selectTab("backup");
-                } else {
-                    startBackupService(PhotoBackupService.ACTION_SCAN_AND_BACKUP, null);
-                    Toast.makeText(MainActivity.this, "已触发相册增量备份扫描", Toast.LENGTH_SHORT).show();
-                }
-            }
-        });
-        row1.addView(tvCloudPill, makeMarginLp(dp(8)));
-
-        // Column Layout Switch Button (3 cols <-> 4 cols)
-        ImageView btnCols = new ImageView(this);
-        btnCols.setImageDrawable(VectorIcons.create(VectorIcons.ICON_GRID, Color.parseColor("#CBD5E1"), dp(20)));
-        btnCols.setPadding(dp(7), dp(7), dp(7), dp(7));
-        btnCols.setBackground(makeRoundRect("#151E32", "#1E293B", dp(8)));
-        btnCols.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                gridColumns = (gridColumns == 3) ? 4 : 3;
+                gridColumns = gridColumns == 3 ? 4 : 3;
                 BackupState.get(MainActivity.this).setGridColumns(gridColumns);
-                rebuildTimelineRows();
+                photosLayoutManager.setSpanCount(gridColumns);
                 timelineAdapter.notifyDataSetChanged();
-                Toast.makeText(MainActivity.this, "已切换为每行 " + gridColumns + " 列视图", Toast.LENGTH_SHORT).show();
+                Toast.makeText(MainActivity.this, "已切换为 " + gridColumns + " 列布局", Toast.LENGTH_SHORT).show();
             }
         });
-        row1.addView(btnCols, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        pill.addView(ivTopColToggle, new LinearLayout.LayoutParams(dp(32), dp(32)));
 
-        View spacer = new View(this);
-        row1.addView(spacer, new LinearLayout.LayoutParams(dp(6), dp(1)));
-
-        // Upload Plus Button
-        ImageView btnUpload = new ImageView(this);
-        btnUpload.setImageDrawable(VectorIcons.create(VectorIcons.ICON_PLUS, Color.WHITE, dp(20)));
-        btnUpload.setPadding(dp(7), dp(7), dp(7), dp(7));
-        btnUpload.setBackground(makeRoundRect("#0284C7", "#38BDF8", dp(8)));
-        btnUpload.setOnClickListener(new View.OnClickListener() {
+        // Sync Avatar Badge
+        ImageView ivSyncBadge = new ImageView(this);
+        ivSyncBadge.setImageResource(R.drawable.ic_m3_sync);
+        ivSyncBadge.setColorFilter(Color.parseColor("#A8C7FA"));
+        ivSyncBadge.setPadding(dp(6), dp(6), dp(6), dp(6));
+        ivSyncBadge.setBackground(makeRoundRect(Color.parseColor("#284777"), dp(16)));
+        ivSyncBadge.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                pickFilesToUpload("/GoogleDrive/photos", false);
+                bottomNav.setSelectedItemId(R.id.nav_sync);
             }
         });
-        row1.addView(btnUpload, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(dp(32), dp(32));
+        slp.leftMargin = dp(8);
+        pill.addView(ivSyncBadge, slp);
 
-        topBar.addView(row1);
+        bar.addView(pill, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return bar;
+    }
 
-        // Subtle Filter Bar
-        HorizontalScrollView hsv = new HorizontalScrollView(this);
-        hsv.setHorizontalScrollBarEnabled(false);
-        hsv.setPadding(0, dp(10), 0, dp(2));
-
-        LinearLayout chipRow = new LinearLayout(this);
-        chipRow.setOrientation(LinearLayout.HORIZONTAL);
-        chipRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        addFilterChip(chipRow, "all", "全部");
-        addFilterChip(chipRow, "cloud", "已备份");
-        addFilterChip(chipRow, "local", "未备份");
-        addFilterChip(chipRow, "video", "视频");
-        addFilterChip(chipRow, "fav", "收藏");
-
-        hsv.addView(chipRow);
-        topBar.addView(hsv);
-        layout.addView(topBar);
-
-        // Selection Contextual Action Bar (Only visible when items are selected)
-        selectionBar = new LinearLayout(this);
-        selectionBar.setOrientation(LinearLayout.HORIZONTAL);
-        selectionBar.setGravity(Gravity.CENTER_VERTICAL);
-        selectionBar.setPadding(dp(14), dp(8), dp(12), dp(8));
-        selectionBar.setBackground(makeRoundRect("#162338", "#0284C7", dp(10)));
-        LinearLayout.LayoutParams selLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        selLp.setMargins(dp(12), dp(4), dp(12), dp(4));
-        selectionBar.setVisibility(View.GONE);
-
-        tvSelectionCount = new TextView(this);
-        tvSelectionCount.setText("已选 0 项");
-        tvSelectionCount.setTextColor(Color.WHITE);
-        tvSelectionCount.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
-        tvSelectionCount.setTypeface(null, Typeface.BOLD);
-        selectionBar.addView(tvSelectionCount, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        TextView btnSelAll = createPillButton("全选", "#1E293B", "#334155");
-        btnSelAll.setOnClickListener(new View.OnClickListener() {
+    private void setupPhotosView() {
+        photosRefreshLayout = new SwipeRefreshLayout(this);
+        photosRefreshLayout.setColorSchemeColors(Color.parseColor("#A8C7FA"));
+        photosRefreshLayout.setProgressBackgroundColorSchemeColor(Color.parseColor("#1E2025"));
+        photosRefreshLayout.setOnRefreshListener(new SwipeRefreshLayout.OnRefreshListener() {
             @Override
-            public void onClick(View v) {
-                if (selectedKeys.size() == filteredItems.size()) {
-                    selectedKeys.clear();
-                } else {
-                    for (GalleryItem it : filteredItems) selectedKeys.add(it.getUniqueKey());
+            public void onRefresh() {
+                loadAllMediaData();
+            }
+        });
+
+        photosRecyclerView = new RecyclerView(this);
+        photosLayoutManager = new GridLayoutManager(this, gridColumns);
+        photosLayoutManager.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
+            @Override
+            public int getSpanSize(int position) {
+                if (position >= 0 && position < timelineEntries.size()) {
+                    if (timelineEntries.get(position).type == TimelineEntry.TYPE_HEADER) {
+                        return photosLayoutManager.getSpanCount();
+                    }
                 }
-                updateSelectionUi();
+                return 1;
             }
         });
-        selectionBar.addView(btnSelAll, makeMarginLp(dp(6)));
-
-        TextView btnSelUpload = createPillButton("备份上云", "#0284C7", "#38BDF8");
-        btnSelUpload.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                uploadSelectedLocalItems();
-            }
-        });
-        selectionBar.addView(btnSelUpload, makeMarginLp(dp(6)));
-
-        TextView btnSelDelete = createPillButton("删除云端", "#7F1D1D", "#EF4444");
-        btnSelDelete.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                deleteSelectedCloudItems();
-            }
-        });
-        selectionBar.addView(btnSelDelete, makeMarginLp(dp(6)));
-
-        TextView btnSelCancel = createPillButton("完成", "#1E293B", "#334155");
-        btnSelCancel.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                selectionMode = false;
-                selectedKeys.clear();
-                updateSelectionUi();
-            }
-        });
-        selectionBar.addView(btnSelCancel);
-        layout.addView(selectionBar, selLp);
-
-        // Live Sync Progress Banner
-        liveSyncBanner = new LinearLayout(this);
-        liveSyncBanner.setOrientation(LinearLayout.VERTICAL);
-        liveSyncBanner.setPadding(dp(12), dp(8), dp(12), dp(8));
-        liveSyncBanner.setBackground(makeRoundRect("#132036", "#0284C7", dp(10)));
-        LinearLayout.LayoutParams syncLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        syncLp.setMargins(dp(12), dp(4), dp(12), dp(4));
-        liveSyncBanner.setVisibility(View.GONE);
-
-        LinearLayout syncRow = new LinearLayout(this);
-        syncRow.setOrientation(LinearLayout.HORIZONTAL);
-        syncRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        tvLiveSyncTitle = new TextView(this);
-        tvLiveSyncTitle.setTextColor(Color.parseColor("#E0F2FE"));
-        tvLiveSyncTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
-        tvLiveSyncTitle.setSingleLine(true);
-        tvLiveSyncTitle.setEllipsize(TextUtils.TruncateAt.MIDDLE);
-        syncRow.addView(tvLiveSyncTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        tvLiveSyncSpeed = new TextView(this);
-        tvLiveSyncSpeed.setTextColor(Color.parseColor("#38BDF8"));
-        tvLiveSyncSpeed.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-        tvLiveSyncSpeed.setTypeface(null, Typeface.BOLD);
-        tvLiveSyncSpeed.setPadding(dp(8), 0, dp(8), 0);
-        syncRow.addView(tvLiveSyncSpeed);
-
-        TextView btnStopInline = createPillButton("停止", "#7F1D1D", "#EF4444");
-        btnStopInline.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                stopBackupServiceNow();
-            }
-        });
-        syncRow.addView(btnStopInline);
-        liveSyncBanner.addView(syncRow);
-
-        pbLiveSync = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        pbLiveSync.setMax(100);
-        LinearLayout.LayoutParams pbLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(5));
-        pbLp.topMargin = dp(6);
-        liveSyncBanner.addView(pbLiveSync, pbLp);
-        layout.addView(liveSyncBanner, syncLp);
-
-        // Date-Grouped Timeline ListView
-        FrameLayout listFrame = new FrameLayout(this);
-        timelineListView = new ListView(this);
-        timelineListView.setDivider(null);
-        timelineListView.setDividerHeight(0);
-        timelineListView.setSelector(android.R.color.transparent);
-        timelineListView.setPadding(0, 0, 0, dp(24));
-        timelineListView.setClipToPadding(false);
+        photosRecyclerView.setLayoutManager(photosLayoutManager);
+        photosRecyclerView.setHasFixedSize(true);
+        photosRecyclerView.setItemViewCacheSize(20);
 
         timelineAdapter = new TimelineAdapter();
-        timelineListView.setAdapter(timelineAdapter);
+        photosRecyclerView.setAdapter(timelineAdapter);
 
-        tvEmptyState = new TextView(this);
-        tvEmptyState.setText("暂无照片或视频\n点击右上角 + 上传，或在「相册」页开启相册目录");
-        tvEmptyState.setTextColor(Color.parseColor("#64748B"));
-        tvEmptyState.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
-        tvEmptyState.setGravity(Gravity.CENTER);
-        tvEmptyState.setVisibility(View.GONE);
-
-        listFrame.addView(timelineListView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        listFrame.addView(tvEmptyState, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        layout.addView(listFrame, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        return layout;
+        photosRefreshLayout.addView(photosRecyclerView);
+        contentFrame.addView(photosRefreshLayout);
     }
 
-    private void addFilterChip(LinearLayout parent, final String key, String label) {
-        TextView tv = new TextView(this);
-        tv.setText(label);
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
-        tv.setSingleLine(true);
-        tv.setPadding(dp(13), dp(5), dp(13), dp(5));
-        styleFilterChip(tv, key.equals(currentFilter));
-        tv.setOnClickListener(new View.OnClickListener() {
+    private void setupAlbumsView() {
+        albumsRefreshLayout = new SwipeRefreshLayout(this);
+        albumsRefreshLayout.setColorSchemeColors(Color.parseColor("#A8C7FA"));
+        albumsRefreshLayout.setProgressBackgroundColorSchemeColor(Color.parseColor("#1E2025"));
+        albumsRefreshLayout.setOnRefreshListener(new SwipeRefreshLayout.OnRefreshListener() {
             @Override
-            public void onClick(View v) {
-                setGalleryFilter(key);
+            public void onRefresh() {
+                loadAllMediaData();
             }
         });
-        filterChips.put(key, tv);
-        parent.addView(tv, makeMarginLp(dp(6)));
+
+        albumsRecyclerView = new RecyclerView(this);
+        albumsRecyclerView.setLayoutManager(new GridLayoutManager(this, 2));
+        albumsAdapter = new AlbumsAdapter();
+        albumsRecyclerView.setAdapter(albumsAdapter);
+
+        albumsRefreshLayout.addView(albumsRecyclerView);
+        albumsRefreshLayout.setVisibility(View.GONE);
+        contentFrame.addView(albumsRefreshLayout);
     }
 
-    private void styleFilterChip(TextView tv, boolean active) {
-        tv.setTypeface(null, active ? Typeface.BOLD : Typeface.NORMAL);
-        tv.setTextColor(Color.parseColor(active ? "#FFFFFF" : "#94A3B8"));
-        tv.setBackground(makeRoundRect(active ? "#0284C7" : "#151E32", active ? "#38BDF8" : "#1E293B", dp(999)));
+    private void setupSyncView() {
+        syncScrollView = new ScrollView(this);
+        syncScrollView.setBackgroundColor(ContextCompat.getColor(this, R.color.m3_surface));
+        syncContainer = new LinearLayout(this);
+        syncContainer.setOrientation(LinearLayout.VERTICAL);
+        syncContainer.setPadding(dp(16), dp(16), dp(16), dp(32));
+        syncScrollView.addView(syncContainer);
+        syncScrollView.setVisibility(View.GONE);
+        contentFrame.addView(syncScrollView);
     }
 
-    private void setGalleryFilter(String filterKey) {
-        currentFilter = filterKey;
-        for (Map.Entry<String, TextView> e : filterChips.entrySet()) {
-            styleFilterChip(e.getValue(), e.getKey().equals(filterKey));
+    private void setupAlistWebView() {
+        alistWebView = new WebView(this);
+        WebSettings ws = alistWebView.getSettings();
+        ws.setJavaScriptEnabled(true);
+        ws.setDomStorageEnabled(true);
+        ws.setDatabaseEnabled(true);
+        ws.setUseWideViewPort(true);
+        ws.setLoadWithOverviewMode(true);
+        ws.setSupportZoom(true);
+        ws.setBuiltInZoomControls(true);
+        ws.setDisplayZoomControls(false);
+
+        alistWebView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                return false;
+            }
+        });
+
+        alistWebView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+                if (uploadMessageCallback != null) uploadMessageCallback.onReceiveValue(null);
+                uploadMessageCallback = filePathCallback;
+                Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                startActivityForResult(Intent.createChooser(intent, "选择文件上传到网盘"), REQ_CHOOSE_FILE);
+                return true;
+            }
+        });
+
+        alistWebView.setVisibility(View.GONE);
+        contentFrame.addView(alistWebView);
+    }
+
+    private void switchTab(String tab) {
+        currentTab = tab;
+        photosRefreshLayout.setVisibility("photos".equals(tab) ? View.VISIBLE : View.GONE);
+        albumsRefreshLayout.setVisibility("albums".equals(tab) ? View.VISIBLE : View.GONE);
+        syncScrollView.setVisibility("sync".equals(tab) ? View.VISIBLE : View.GONE);
+        alistWebView.setVisibility("drive".equals(tab) ? View.VISIBLE : View.GONE);
+
+        ivTopColToggle.setVisibility("photos".equals(tab) ? View.VISIBLE : View.GONE);
+
+        if ("photos".equals(tab)) {
+            tvTopTitle.setText("Google Drive 相册");
+        } else if ("albums".equals(tab)) {
+            tvTopTitle.setText("精选相册与目录");
+        } else if ("sync".equals(tab)) {
+            tvTopTitle.setText("备份与直传引擎");
+            renderSyncDashboard();
+        } else if ("drive".equals(tab)) {
+            tvTopTitle.setText("AList 全能网盘");
+            if (!alistLoaded) {
+                alistLoaded = true;
+                alistWebView.loadUrl(BASE_API + "/GoogleDrive");
+            }
         }
-        if (filterKey.startsWith("bucket:")) {
-            tvTopTitle.setText(filterKey.substring(7));
+    }
+
+    private void checkPermissionsAndLoad() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            boolean hasImages = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED;
+            boolean hasVideo = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED;
+            if (!hasImages || !hasVideo) {
+                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.POST_NOTIFICATIONS}, REQ_PERMS);
+                return;
+            }
         } else {
-            tvTopTitle.setText("照片");
-        }
-        applyFilterAndRefreshTimeline();
-    }
-
-    private void updateSelectionUi() {
-        if (selectedKeys.isEmpty()) {
-            selectionMode = false;
-        }
-        selectionBar.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-        tvSelectionCount.setText("已选择 " + selectedKeys.size() + " 项");
-        timelineAdapter.notifyDataSetChanged();
-    }
-
-    // ==================== DATE-GROUPED TIMELINE ADAPTER ====================
-
-    private void rebuildTimelineRows() {
-        timelineRows.clear();
-        if (filteredItems.isEmpty()) return;
-
-        Map<String, List<GalleryItem>> grouped = new LinkedHashMap<>();
-        Map<String, List<Integer>> groupedIndices = new LinkedHashMap<>();
-
-        for (int i = 0; i < filteredItems.size(); i++) {
-            GalleryItem it = filteredItems.get(i);
-            String g = it.dayGroupTitle != null ? it.dayGroupTitle : "更早";
-            if (!grouped.containsKey(g)) {
-                grouped.put(g, new ArrayList<GalleryItem>());
-                groupedIndices.put(g, new ArrayList<Integer>());
-            }
-            grouped.get(g).add(it);
-            groupedIndices.get(g).add(i);
-        }
-
-        int cols = Math.max(2, Math.min(5, gridColumns));
-        for (Map.Entry<String, List<GalleryItem>> entry : grouped.entrySet()) {
-            String dateTitle = entry.getKey();
-            List<GalleryItem> dayList = entry.getValue();
-            List<Integer> dayIdxList = groupedIndices.get(dateTitle);
-
-            TimelineRow header = new TimelineRow();
-            header.isHeader = true;
-            header.dateTitle = dateTitle;
-            header.dayItems = dayList;
-            timelineRows.add(header);
-
-            for (int i = 0; i < dayList.size(); i += cols) {
-                TimelineRow row = new TimelineRow();
-                row.isHeader = false;
-                int end = Math.min(i + cols, dayList.size());
-                row.rowItems = dayList.subList(i, end);
-                row.rowGlobalIndices = dayIdxList.subList(i, end);
-                timelineRows.add(row);
+            boolean hasStorage = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+            if (!hasStorage) {
+                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_PERMS);
+                return;
             }
         }
+        loadAllMediaData();
     }
 
-    private class TimelineAdapter extends BaseAdapter {
-        @Override
-        public int getCount() {
-            return timelineRows.size();
-        }
-
-        @Override
-        public Object getItem(int position) {
-            return timelineRows.get(position);
-        }
-
-        @Override
-        public long getItemId(int position) {
-            return position;
-        }
-
-        @Override
-        public int getViewTypeCount() {
-            return 2;
-        }
-
-        @Override
-        public int getItemViewType(int position) {
-            return timelineRows.get(position).isHeader ? 0 : 1;
-        }
-
-        @Override
-        public View getView(int position, View convertView, ViewGroup parent) {
-            final TimelineRow row = timelineRows.get(position);
-            if (row.isHeader) {
-                LinearLayout headerView = (LinearLayout) convertView;
-                if (headerView == null) {
-                    headerView = new LinearLayout(MainActivity.this);
-                    headerView.setOrientation(LinearLayout.HORIZONTAL);
-                    headerView.setGravity(Gravity.CENTER_VERTICAL);
-                    headerView.setPadding(dp(14), dp(14), dp(14), dp(8));
-
-                    TextView tvDate = new TextView(MainActivity.this);
-                    tvDate.setTextColor(Color.parseColor("#E2E8F0"));
-                    tvDate.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
-                    tvDate.setTypeface(null, Typeface.BOLD);
-                    headerView.addView(tvDate, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-                    ImageView ivDaySelect = new ImageView(MainActivity.this);
-                    headerView.addView(ivDaySelect, new LinearLayout.LayoutParams(dp(20), dp(20)));
-                }
-
-                TextView tvDate = (TextView) headerView.getChildAt(0);
-                ImageView ivDaySelect = (ImageView) headerView.getChildAt(1);
-                tvDate.setText(row.dateTitle);
-
-                boolean allDaySelected = true;
-                for (GalleryItem it : row.dayItems) {
-                    if (!selectedKeys.contains(it.getUniqueKey())) {
-                        allDaySelected = false;
-                        break;
-                    }
-                }
-                ivDaySelect.setImageDrawable(VectorIcons.create(
-                        allDaySelected ? VectorIcons.ICON_CHECK_CIRCLE : VectorIcons.ICON_UNCHECK_CIRCLE,
-                        allDaySelected ? Color.parseColor("#0284C7") : Color.parseColor("#64748B"),
-                        dp(20)
-                ));
-                final boolean finalAllSelected = allDaySelected;
-                ivDaySelect.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        selectionMode = true;
-                        for (GalleryItem it : row.dayItems) {
-                            if (finalAllSelected) selectedKeys.remove(it.getUniqueKey());
-                            else selectedKeys.add(it.getUniqueKey());
-                        }
-                        updateSelectionUi();
-                    }
-                });
-                return headerView;
-            } else {
-                // Photo Row with N square cells
-                int cols = Math.max(2, Math.min(5, gridColumns));
-                LinearLayout rowLayout = (LinearLayout) convertView;
-                if (rowLayout == null || rowLayout.getChildCount() != cols) {
-                    rowLayout = new LinearLayout(MainActivity.this);
-                    rowLayout.setOrientation(LinearLayout.HORIZONTAL);
-                    rowLayout.setPadding(dp(2), 0, dp(2), dp(3));
-
-                    for (int c = 0; c < cols; c++) {
-                        SquareFrameLayout cell = new SquareFrameLayout(MainActivity.this);
-                        LinearLayout.LayoutParams cellLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-                        cellLp.setMargins(dp(1), 0, dp(1), 0);
-
-                        ImageView ivPhoto = new ImageView(MainActivity.this);
-                        ivPhoto.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                        ivPhoto.setBackgroundColor(Color.parseColor("#131C2E"));
-                        cell.addView(ivPhoto, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-                        // Subtle bottom-left vector cloud icon (NO ugly text labels!)
-                        ImageView ivCloudBadge = new ImageView(MainActivity.this);
-                        FrameLayout.LayoutParams cbLp = new FrameLayout.LayoutParams(dp(18), dp(18), Gravity.BOTTOM | Gravity.START);
-                        cbLp.setMargins(dp(5), 0, 0, dp(5));
-                        ivCloudBadge.setPadding(dp(2), dp(2), dp(2), dp(2));
-                        ivCloudBadge.setBackground(makeRoundRect("#88000000", "#00000000", dp(99)));
-                        cell.addView(ivCloudBadge, cbLp);
-
-                        // Subtle bottom-right video duration pill (only visible for videos!)
-                        TextView tvVideoPill = new TextView(MainActivity.this);
-                        tvVideoPill.setTextColor(Color.WHITE);
-                        tvVideoPill.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 10);
-                        tvVideoPill.setTypeface(null, Typeface.BOLD);
-                        tvVideoPill.setPadding(dp(5), dp(1), dp(5), dp(1));
-                        tvVideoPill.setBackground(makeRoundRect("#99000000", "#00000000", dp(4)));
-                        FrameLayout.LayoutParams vpLp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
-                        vpLp.setMargins(0, 0, dp(5), dp(5));
-                        cell.addView(tvVideoPill, vpLp);
-
-                        // Top-right selection check circle
-                        ImageView ivCheck = new ImageView(MainActivity.this);
-                        FrameLayout.LayoutParams ckLp = new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP | Gravity.END);
-                        ckLp.setMargins(0, dp(5), dp(5), 0);
-                        cell.addView(ivCheck, ckLp);
-
-                        CellHolder ch = new CellHolder();
-                        ch.cell = cell;
-                        ch.ivPhoto = ivPhoto;
-                        ch.ivCloudBadge = ivCloudBadge;
-                        ch.tvVideoPill = tvVideoPill;
-                        ch.ivCheck = ivCheck;
-                        cell.setTag(ch);
-                        rowLayout.addView(cell, cellLp);
-                    }
-                }
-
-                for (int c = 0; c < cols; c++) {
-                    SquareFrameLayout cell = (SquareFrameLayout) rowLayout.getChildAt(c);
-                    final CellHolder ch = (CellHolder) cell.getTag();
-                    if (c >= row.rowItems.size()) {
-                        cell.setVisibility(View.INVISIBLE);
-                        ch.boundKey = "";
-                        continue;
-                    }
-                    cell.setVisibility(View.VISIBLE);
-                    final GalleryItem item = row.rowItems.get(c);
-                    final int globalIdx = row.rowGlobalIndices.get(c);
-                    final String key = item.getUniqueKey();
-                    ch.boundKey = key;
-
-                    // Cloud icon: only show subtle cloud-done icon when backed up
-                    if (item.isOnCloud) {
-                        ch.ivCloudBadge.setVisibility(View.VISIBLE);
-                        ch.ivCloudBadge.setImageDrawable(VectorIcons.create(VectorIcons.ICON_CLOUD_DONE, Color.WHITE, dp(14)));
-                    } else {
-                        ch.ivCloudBadge.setVisibility(View.GONE);
-                    }
-
-                    // Video duration badge: only for videos! Photos remain 100% clean!
-                    if (item.isVideo) {
-                        ch.tvVideoPill.setVisibility(View.VISIBLE);
-                        ch.tvVideoPill.setText(item.durationMs > 0 ? ("▶ " + formatDuration(item.durationMs)) : "▶ 视频");
-                    } else {
-                        ch.tvVideoPill.setVisibility(View.GONE);
-                    }
-
-                    // Selection overlay
-                    if (selectionMode) {
-                        ch.ivCheck.setVisibility(View.VISIBLE);
-                        boolean sel = selectedKeys.contains(key);
-                        ch.ivCheck.setImageDrawable(VectorIcons.create(
-                                sel ? VectorIcons.ICON_CHECK_CIRCLE : VectorIcons.ICON_UNCHECK_CIRCLE,
-                                sel ? Color.parseColor("#0284C7") : Color.WHITE,
-                                dp(22)
-                        ));
-                        ch.ivPhoto.setAlpha(sel ? 0.78f : 1.0f);
-                    } else {
-                        ch.ivCheck.setVisibility(View.GONE);
-                        ch.ivPhoto.setAlpha(1.0f);
-                    }
-
-                    loadItemThumbnail(item, ch.ivPhoto, ch);
-
-                    cell.setOnClickListener(new View.OnClickListener() {
-                        @Override
-                        public void onClick(View v) {
-                            if (selectionMode) {
-                                if (selectedKeys.contains(key)) selectedKeys.remove(key);
-                                else selectedKeys.add(key);
-                                updateSelectionUi();
-                            } else {
-                                openViewerDialog(globalIdx);
-                            }
-                        }
-                    });
-
-                    cell.setOnLongClickListener(new View.OnLongClickListener() {
-                        @Override
-                        public boolean onLongClick(View v) {
-                            selectionMode = true;
-                            selectedKeys.add(key);
-                            updateSelectionUi();
-                            return true;
-                        }
-                    });
-                }
-                return rowLayout;
-            }
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_PERMS) {
+            loadAllMediaData();
         }
     }
 
-    private static class CellHolder {
-        SquareFrameLayout cell;
-        ImageView ivPhoto;
-        ImageView ivCloudBadge;
-        TextView tvVideoPill;
-        ImageView ivCheck;
-        String boundKey;
-    }
+    private void loadAllMediaData() {
+        photosRefreshLayout.setRefreshing(true);
+        albumsRefreshLayout.setRefreshing(true);
 
-    public static class SquareFrameLayout extends FrameLayout {
-        public SquareFrameLayout(Context context) {
-            super(context);
-        }
-
-        @Override
-        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-            super.onMeasure(widthMeasureSpec, widthMeasureSpec);
-        }
-    }
-
-    // ==================== TAB 2: VISUAL 2-COLUMN ALBUM COVER CARDS ====================
-
-    private LinearLayout buildAlbumsGridTab() {
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setBackgroundColor(Color.parseColor("#0B0F17"));
-
-        LinearLayout topBar = new LinearLayout(this);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-        topBar.setGravity(Gravity.CENTER_VERTICAL);
-        topBar.setPadding(dp(16), dp(14), dp(16), dp(10));
-
-        TextView tvTitle = new TextView(this);
-        tvTitle.setText("相册");
-        tvTitle.setTextColor(Color.WHITE);
-        tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 22);
-        tvTitle.setTypeface(null, Typeface.BOLD);
-        topBar.addView(tvTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        TextView tvHint = new TextView(this);
-        tvHint.setText("点击右上角云标可开关该相册自动备份");
-        tvHint.setTextColor(Color.parseColor("#64748B"));
-        tvHint.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-        topBar.addView(tvHint);
-        layout.addView(topBar);
-
-        albumGridView = new GridView(this);
-        albumGridView.setNumColumns(2);
-        albumGridView.setHorizontalSpacing(dp(12));
-        albumGridView.setVerticalSpacing(dp(14));
-        albumGridView.setPadding(dp(14), dp(6), dp(14), dp(24));
-        albumGridView.setClipToPadding(false);
-        albumGridView.setSelector(android.R.color.transparent);
-
-        albumGridAdapter = new AlbumGridAdapter();
-        albumGridView.setAdapter(albumGridAdapter);
-
-        layout.addView(albumGridView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        return layout;
-    }
-
-    private void rebuildAlbumCards() {
-        albumCards.clear();
-        Set<String> enabledBuckets = BackupState.get(this).getSelectedBuckets();
-        Set<String> favKeys = BackupState.get(this).getFavoritesSet();
-
-        GalleryItem firstCloud = null;
-        GalleryItem firstVideo = null;
-        GalleryItem firstFav = null;
-        int cloudCount = 0, videoCount = 0, favCount = 0;
-
-        Map<String, AlbumCardItem> bucketMap = new LinkedHashMap<>();
-
-        synchronized (allItems) {
-            for (GalleryItem it : allItems) {
-                if (it.isOnCloud) {
-                    cloudCount++;
-                    if (firstCloud == null) firstCloud = it;
-                }
-                if (it.isVideo) {
-                    videoCount++;
-                    if (firstVideo == null) firstVideo = it;
-                }
-                if (favKeys.contains(it.getUniqueKey())) {
-                    favCount++;
-                    if (firstFav == null) firstFav = it;
-                }
-                if (it.localUri != null && it.bucket != null) {
-                    AlbumCardItem card = bucketMap.get(it.bucket);
-                    if (card == null) {
-                        card = new AlbumCardItem();
-                        card.id = "bucket:" + it.bucket;
-                        card.title = translateBucketName(it.bucket);
-                        card.subtitle = it.bucket;
-                        card.count = 0;
-                        card.coverItem = it;
-                        card.isPhoneBucket = true;
-                        card.autoBackupEnabled = enabledBuckets.contains(it.bucket);
-                        bucketMap.put(it.bucket, card);
-                    }
-                    card.count++;
-                }
-            }
-        }
-
-        // Smart Cloud Album Card
-        AlbumCardItem cloudCard = new AlbumCardItem();
-        cloudCard.id = "cloud";
-        cloudCard.title = "云端已备份";
-        cloudCard.subtitle = "Google Drive";
-        cloudCard.count = cloudCount;
-        cloudCard.coverItem = firstCloud;
-        albumCards.add(cloudCard);
-
-        // Smart Favorites Album Card
-        if (favCount > 0) {
-            AlbumCardItem favCard = new AlbumCardItem();
-            favCard.id = "fav";
-            favCard.title = "我的收藏";
-            favCard.subtitle = "精选照片";
-            favCard.count = favCount;
-            favCard.coverItem = firstFav;
-            albumCards.add(favCard);
-        }
-
-        // Smart Videos Album Card
-        if (videoCount > 0) {
-            AlbumCardItem vidCard = new AlbumCardItem();
-            vidCard.id = "video";
-            vidCard.title = "视频";
-            vidCard.subtitle = "全部视频";
-            vidCard.count = videoCount;
-            vidCard.coverItem = firstVideo;
-            albumCards.add(vidCard);
-        }
-
-        albumCards.addAll(bucketMap.values());
-        if (albumGridAdapter != null) {
-            albumGridAdapter.notifyDataSetChanged();
-        }
-    }
-
-    private String translateBucketName(String b) {
-        if ("Camera".equalsIgnoreCase(b)) return "相机";
-        if ("Screenshots".equalsIgnoreCase(b) || "Screenshot".equalsIgnoreCase(b)) return "截屏";
-        if ("WeiXin".equalsIgnoreCase(b) || "WeChat".equalsIgnoreCase(b)) return "微信";
-        if ("Movies".equalsIgnoreCase(b)) return "电影与视频";
-        if ("Download".equalsIgnoreCase(b)) return "下载";
-        return b;
-    }
-
-    private class AlbumGridAdapter extends BaseAdapter {
-        @Override
-        public int getCount() {
-            return albumCards.size();
-        }
-
-        @Override
-        public Object getItem(int position) {
-            return albumCards.get(position);
-        }
-
-        @Override
-        public long getItemId(int position) {
-            return position;
-        }
-
-        @Override
-        public View getView(int position, View convertView, ViewGroup parent) {
-            final AlbumCardItem card = albumCards.get(position);
-
-            LinearLayout cardWrap = new LinearLayout(MainActivity.this);
-            cardWrap.setOrientation(LinearLayout.VERTICAL);
-
-            SquareFrameLayout coverBox = new SquareFrameLayout(MainActivity.this);
-            coverBox.setBackground(makeRoundRect("#151E32", "#1E293B", dp(14)));
-
-            ImageView ivCover = new ImageView(MainActivity.this);
-            ivCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            coverBox.addView(ivCover, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-            if (card.coverItem != null) {
-                CellHolder ch = new CellHolder();
-                ch.boundKey = card.coverItem.getUniqueKey();
-                loadItemThumbnail(card.coverItem, ivCover, ch);
-            }
-
-            // If phone folder, show auto-backup toggle badge on top-right of cover
-            if (card.isPhoneBucket) {
-                TextView tvBackupTag = new TextView(MainActivity.this);
-                tvBackupTag.setText(card.autoBackupEnabled ? "自动备份中" : "点击开启备份");
-                tvBackupTag.setTextColor(Color.WHITE);
-                tvBackupTag.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 10);
-                tvBackupTag.setTypeface(null, Typeface.BOLD);
-                tvBackupTag.setPadding(dp(8), dp(4), dp(8), dp(4));
-                tvBackupTag.setBackground(makeRoundRect(card.autoBackupEnabled ? "#CC0284C7" : "#990F172A", "#33FFFFFF", dp(999)));
-                FrameLayout.LayoutParams tagLp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
-                tagLp.setMargins(0, dp(8), dp(8), 0);
-                tvBackupTag.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        Set<String> cur = BackupState.get(MainActivity.this).getSelectedBuckets();
-                        if (card.autoBackupEnabled) cur.remove(card.subtitle);
-                        else cur.add(card.subtitle);
-                        BackupState st = BackupState.get(MainActivity.this);
-                        st.saveConfig(st.isAutoBackupEnabled(), st.isWifiOnly(), st.isIncludeVideos(), st.getTargetFolder(), cur);
-                        rebuildAlbumCards();
-                        applyFilterAndRefreshTimeline();
-                    }
-                });
-                coverBox.addView(tvBackupTag, tagLp);
-            }
-
-            cardWrap.addView(coverBox, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-            TextView tvName = new TextView(MainActivity.this);
-            tvName.setText(card.title);
-            tvName.setTextColor(Color.WHITE);
-            tvName.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
-            tvName.setTypeface(null, Typeface.BOLD);
-            tvName.setSingleLine(true);
-            tvName.setPadding(dp(4), dp(6), dp(4), 0);
-            cardWrap.addView(tvName);
-
-            TextView tvCount = new TextView(MainActivity.this);
-            tvCount.setText(card.count + " 项");
-            tvCount.setTextColor(Color.parseColor("#94A3B8"));
-            tvCount.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
-            tvCount.setPadding(dp(4), dp(1), dp(4), 0);
-            cardWrap.addView(tvCount);
-
-            cardWrap.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    selectTab("photos");
-                    setGalleryFilter(card.id);
-                }
-            });
-
-            return cardWrap;
-        }
-    }
-
-    // ==================== TAB 3: CLOUD BACKUP & SETTINGS ====================
-
-    private ScrollView buildBackupSettingsTab() {
-        ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(Color.parseColor("#0B0F17"));
-
-        LinearLayout container = new LinearLayout(this);
-        container.setOrientation(LinearLayout.VERTICAL);
-        container.setPadding(dp(14), dp(14), dp(14), dp(30));
-
-        TextView pageTitle = new TextView(this);
-        pageTitle.setText("云同步与备份设置");
-        pageTitle.setTextColor(Color.WHITE);
-        pageTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 22);
-        pageTitle.setTypeface(null, Typeface.BOLD);
-        pageTitle.setPadding(dp(2), 0, 0, dp(12));
-        container.addView(pageTitle);
-
-        // Status Card
-        LinearLayout cardStatus = createCardLayout();
-        LinearLayout headRow = new LinearLayout(this);
-        headRow.setOrientation(LinearLayout.HORIZONTAL);
-        headRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView tvCardTitle = new TextView(this);
-        tvCardTitle.setText("备份引擎状态");
-        tvCardTitle.setTextColor(Color.WHITE);
-        tvCardTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
-        tvCardTitle.setTypeface(null, Typeface.BOLD);
-        headRow.addView(tvCardTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        tvBkBadge = new TextView(this);
-        tvBkBadge.setText("已就绪");
-        tvBkBadge.setTextColor(Color.parseColor("#38BDF8"));
-        tvBkBadge.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
-        tvBkBadge.setTypeface(null, Typeface.BOLD);
-        headRow.addView(tvBkBadge);
-        cardStatus.addView(headRow);
-
-        tvBkSummary = new TextView(this);
-        tvBkSummary.setText("已备份 0 项 · 手机直传 Cloudflare R2 自动归档 Google Drive");
-        tvBkSummary.setTextColor(Color.parseColor("#94A3B8"));
-        tvBkSummary.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
-        tvBkSummary.setPadding(0, dp(6), 0, dp(8));
-        cardStatus.addView(tvBkSummary);
-
-        pbBkBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        pbBkBar.setMax(100);
-        cardStatus.addView(pbBkBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(6)));
-
-        LinearLayout btnRow = new LinearLayout(this);
-        btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setPadding(0, dp(12), 0, 0);
-
-        TextView btnStart = createPillButton("立即扫描备份", "#0284C7", "#38BDF8");
-        btnStart.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                startBackupService(PhotoBackupService.ACTION_SCAN_AND_BACKUP, null);
-            }
-        });
-        btnRow.addView(btnStart, makeMarginLp(dp(8)));
-
-        btnBkStop = createPillButton("停止传输", "#7F1D1D", "#EF4444");
-        btnBkStop.setVisibility(View.GONE);
-        btnBkStop.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                stopBackupServiceNow();
-            }
-        });
-        btnRow.addView(btnBkStop, makeMarginLp(dp(8)));
-
-        TextView btnRecompare = createPillButton("重新比对云端", "#1E293B", "#334155");
-        btnRecompare.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                BackupState.get(MainActivity.this).clearBackedUpLedger();
-                loadUnifiedTimeline(true);
-                Toast.makeText(MainActivity.this, "已重新同步云端列表", Toast.LENGTH_SHORT).show();
-            }
-        });
-        btnRow.addView(btnRecompare);
-        cardStatus.addView(btnRow);
-        container.addView(cardStatus, makeBottomMarginLp(dp(12)));
-
-        // Strategy Switches Card
-        LinearLayout cardSwitches = createCardLayout();
-        BackupState st = BackupState.get(this);
-        swAutoBackup = addSwitchRow(cardSwitches, "开启后台自动备份", "拍照或录像后自动直传云端", st.isAutoBackupEnabled());
-        swWifiOnly = addSwitchRow(cardSwitches, "仅在 Wi-Fi 下自动备份", "防止消耗移动蜂窝流量", st.isWifiOnly());
-        swIncludeVideo = addSwitchRow(cardSwitches, "同时备份视频文件", "支持 4K 视频分片极速同步", st.isIncludeVideos());
-        container.addView(cardSwitches, makeBottomMarginLp(dp(12)));
-
-        // Logs Card
-        LinearLayout cardLogs = createCardLayout();
-        TextView logHead = new TextView(this);
-        logHead.setText("传输记录");
-        logHead.setTextColor(Color.WHITE);
-        logHead.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
-        logHead.setTypeface(null, Typeface.BOLD);
-        logHead.setPadding(0, 0, 0, dp(6));
-        cardLogs.addView(logHead);
-
-        tvBkLogs = new TextView(this);
-        tvBkLogs.setText("暂无传输记录");
-        tvBkLogs.setTextColor(Color.parseColor("#94A3B8"));
-        tvBkLogs.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-        tvBkLogs.setTypeface(Typeface.MONOSPACE);
-        tvBkLogs.setBackground(makeRoundRect("#070A10", "#1E293B", dp(8)));
-        tvBkLogs.setPadding(dp(10), dp(8), dp(10), dp(8));
-        cardLogs.addView(tvBkLogs);
-        container.addView(cardLogs);
-
-        sv.addView(container);
-        return sv;
-    }
-
-    private Switch addSwitchRow(LinearLayout parent, String title, String sub, boolean checked) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(8), 0, dp(8));
-
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        TextView t1 = new TextView(this);
-        t1.setText(title);
-        t1.setTextColor(Color.WHITE);
-        t1.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
-        TextView t2 = new TextView(this);
-        t2.setText(sub);
-        t2.setTextColor(Color.parseColor("#94A3B8"));
-        t2.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-        col.addView(t1);
-        col.addView(t2);
-        row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        Switch sw = new Switch(this);
-        sw.setChecked(checked);
-        sw.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                BackupState st = BackupState.get(MainActivity.this);
-                st.saveConfig(swAutoBackup.isChecked(), swWifiOnly.isChecked(), swIncludeVideo.isChecked(), st.getTargetFolder(), st.getSelectedBuckets());
-                if (swAutoBackup.isChecked()) {
-                    startBackupService(PhotoBackupService.ACTION_START_WATCHER, null);
-                }
-            }
-        });
-        row.addView(sw);
-        parent.addView(row);
-        return sw;
-    }
-
-    // ==================== UNIFIED LOCAL + CLOUD DATA ENGINE ====================
-
-    private void loadUnifiedTimeline(final boolean forceCloudRefresh) {
-        netExecutor.submit(new Runnable() {
+        executor.submit(new Runnable() {
             @Override
             public void run() {
-                final List<GalleryItem> localList = queryLocalMediaItems();
-                synchronized (allItems) {
-                    if (allItems.isEmpty() && !localList.isEmpty()) {
-                        allItems.addAll(localList);
+                final List<GalleryItem> local = scanLocalMedia();
+                final List<GalleryItem> cloud = fetchCloudMedia();
+
+                // Merge & deduplicate
+                final Map<String, GalleryItem> map = new LinkedHashMap<>();
+                for (GalleryItem item : local) {
+                    map.put(item.getUniqueKey(), item);
+                }
+                for (GalleryItem cItem : cloud) {
+                    String key = cItem.getUniqueKey();
+                    if (map.containsKey(key)) {
+                        GalleryItem existing = map.get(key);
+                        existing.cloudUrl = cItem.cloudUrl;
+                    } else {
+                        map.put(key, cItem);
                     }
                 }
-                uiHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        applyFilterAndRefreshTimeline();
-                        rebuildAlbumCards();
-                    }
-                });
 
-                Map<String, GalleryItem> cloudMap = fetchCloudPhotosMap(forceCloudRefresh);
-                Map<String, GalleryItem> mergedMap = new LinkedHashMap<>();
-
-                for (GalleryItem loc : localList) {
-                    GalleryItem cld = cloudMap.remove(loc.name);
-                    if (cld != null) {
-                        loc.isOnCloud = true;
-                        loc.cloudStatus = cld.cloudStatus;
-                        loc.cloudPath = cld.cloudPath;
-                        loc.thumbUrl = cld.thumbUrl;
-                        loc.fullUrl = cld.fullUrl;
-                        loc.downloadUrl = cld.downloadUrl;
-                        BackupState.get(MainActivity.this).markBackedUp(loc.name);
-                    }
-                    mergedMap.put(loc.name, loc);
-                }
-
-                for (GalleryItem cldOnly : cloudMap.values()) {
-                    mergedMap.put(cldOnly.name, cldOnly);
-                }
-
-                final List<GalleryItem> finalMerged = new ArrayList<>(mergedMap.values());
-                Collections.sort(finalMerged, new Comparator<GalleryItem>() {
+                final List<GalleryItem> merged = new ArrayList<>(map.values());
+                Collections.sort(merged, new Comparator<GalleryItem>() {
                     @Override
                     public int compare(GalleryItem a, GalleryItem b) {
-                        return Long.compare(b.timestampMs, a.timestampMs);
+                        return Long.compare(b.dateTaken, a.dateTaken);
                     }
                 });
 
-                synchronized (allItems) {
-                    allItems.clear();
-                    allItems.addAll(finalMerged);
-                }
+                // Build Timeline Entries
+                final List<TimelineEntry> tEntries = buildTimelineEntries(merged);
+                final List<AlbumCard> aCards = buildAlbumCards(merged);
 
-                uiHandler.post(new Runnable() {
+                mainHandler.post(new Runnable() {
                     @Override
                     public void run() {
-                        applyFilterAndRefreshTimeline();
-                        rebuildAlbumCards();
+                        allMediaItems.clear();
+                        allMediaItems.addAll(merged);
+
+                        timelineEntries.clear();
+                        timelineEntries.addAll(tEntries);
+                        timelineAdapter.notifyDataSetChanged();
+
+                        albumCards.clear();
+                        albumCards.addAll(aCards);
+                        albumsAdapter.notifyDataSetChanged();
+
+                        photosRefreshLayout.setRefreshing(false);
+                        albumsRefreshLayout.setRefreshing(false);
                     }
                 });
             }
         });
     }
 
-    private List<GalleryItem> queryLocalMediaItems() {
-        List<GalleryItem> result = new ArrayList<>();
-        if (!hasPermissions()) return result;
-
-        Set<String> backedUpSet = BackupState.get(this).getBackedUpSet();
-        querySingleMediaTable(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, false, backedUpSet, result);
-        querySingleMediaTable(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, backedUpSet, result);
-
-        Collections.sort(result, new Comparator<GalleryItem>() {
-            @Override
-            public int compare(GalleryItem a, GalleryItem b) {
-                return Long.compare(b.timestampMs, a.timestampMs);
-            }
-        });
-        return result;
-    }
-
-    private void querySingleMediaTable(Uri contentUri, boolean isVideo, Set<String> backedUpSet, List<GalleryItem> out) {
-        String[] proj = isVideo ? new String[]{
-                MediaStore.MediaColumns._ID,
-                MediaStore.MediaColumns.DISPLAY_NAME,
-                MediaStore.MediaColumns.SIZE,
-                MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
-                MediaStore.MediaColumns.DATE_MODIFIED,
-                MediaStore.Video.VideoColumns.DURATION
-        } : new String[]{
-                MediaStore.MediaColumns._ID,
-                MediaStore.MediaColumns.DISPLAY_NAME,
-                MediaStore.MediaColumns.SIZE,
-                MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
-                MediaStore.MediaColumns.DATE_MODIFIED
+    private List<GalleryItem> scanLocalMedia() {
+        List<GalleryItem> list = new ArrayList<>();
+        Uri[] uris = new Uri[]{
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         };
-        Cursor c = null;
-        try {
-            c = getContentResolver().query(contentUri, proj, null, null, MediaStore.MediaColumns.DATE_MODIFIED + " DESC");
-            if (c != null) {
-                int idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID);
-                int nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME);
-                int sizeCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE);
-                int bucketCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME);
-                int dateCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED);
-                int durCol = isVideo ? c.getColumnIndex(MediaStore.Video.VideoColumns.DURATION) : -1;
 
-                int count = 0;
-                while (c.moveToNext() && count < 800) {
-                    long id = c.getLong(idCol);
-                    String name = c.getString(nameCol);
-                    long size = c.getLong(sizeCol);
-                    String bucket = c.getString(bucketCol);
-                    long dateSec = c.getLong(dateCol);
-                    if (name == null || name.isEmpty() || size <= 0) continue;
-                    if (bucket == null || bucket.isEmpty()) bucket = "Default";
+        for (Uri queryUri : uris) {
+            boolean isVideoQuery = queryUri == MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+            String[] projection = new String[]{
+                    MediaStore.MediaColumns._ID,
+                    MediaStore.MediaColumns.DISPLAY_NAME,
+                    MediaStore.MediaColumns.DATE_MODIFIED,
+                    MediaStore.MediaColumns.SIZE,
+                    MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
+                    isVideoQuery ? MediaStore.Video.VideoColumns.DURATION : MediaStore.MediaColumns._ID
+            };
 
-                    GalleryItem it = new GalleryItem();
-                    it.mediaId = id;
-                    it.localUri = ContentUris.withAppendedId(contentUri, id);
-                    it.name = name;
-                    it.size = size;
-                    it.bucket = bucket;
-                    it.isVideo = isVideo;
-                    if (isVideo && durCol >= 0) it.durationMs = c.getLong(durCol);
-                    it.timestampMs = dateSec * 1000L;
-                    it.dayGroupTitle = formatDayGroupTitle(it.timestampMs);
-                    it.isOnCloud = backedUpSet.contains(name);
-                    it.cloudStatus = it.isOnCloud ? "synced" : "";
-                    out.add(it);
-                    count++;
+            Cursor cursor = null;
+            try {
+                cursor = getContentResolver().query(queryUri, projection, null, null, MediaStore.MediaColumns.DATE_MODIFIED + " DESC");
+                if (cursor != null) {
+                    int idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID);
+                    int nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME);
+                    int dateCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED);
+                    int sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE);
+                    int bucketCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME);
+                    int durCol = isVideoQuery ? cursor.getColumnIndexOrThrow(MediaStore.Video.VideoColumns.DURATION) : -1;
+
+                    while (cursor.moveToNext()) {
+                        long id = cursor.getLong(idCol);
+                        String name = cursor.getString(nameCol);
+                        long dateMod = cursor.getLong(dateCol);
+                        long size = cursor.getLong(sizeCol);
+                        String bucket = cursor.getString(bucketCol);
+                        long dur = durCol >= 0 ? cursor.getLong(durCol) : 0;
+
+                        if (name == null || name.isEmpty() || size <= 0) continue;
+
+                        GalleryItem item = new GalleryItem();
+                        item.uri = ContentUris.withAppendedId(queryUri, id);
+                        item.name = name;
+                        item.dateTaken = dateMod * 1000L;
+                        item.size = size;
+                        item.bucketName = bucket != null ? bucket : "相机";
+                        item.isVideo = isVideoQuery;
+                        item.durationMs = dur;
+                        list.add(item);
+                    }
                 }
+            } catch (Exception ignored) {
+            } finally {
+                if (cursor != null) cursor.close();
             }
-        } catch (Exception ignored) {
-        } finally {
-            if (c != null) c.close();
         }
+        return list;
     }
 
-    private Map<String, GalleryItem> fetchCloudPhotosMap(boolean forceRefresh) {
-        Map<String, GalleryItem> map = new LinkedHashMap<>();
+    private List<GalleryItem> fetchCloudMedia() {
+        List<GalleryItem> list = new ArrayList<>();
         HttpURLConnection conn = null;
         try {
-            String u = BASE_API + "/api/cloud_transfer/photos" + (forceRefresh ? "?refresh=1" : "");
-            conn = (HttpURLConnection) new URL(u).openConnection();
+            URL url = new URL(BASE_API + "/api/cloud_transfer/photos");
+            conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", USER_AGENT);
-            conn.setConnectTimeout(8000);
-            conn.setReadTimeout(12000);
+            conn.setConnectTimeout(6000);
+            conn.setReadTimeout(6000);
             if (conn.getResponseCode() == 200) {
                 BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
                 StringBuilder sb = new StringBuilder();
@@ -1390,28 +591,22 @@ public class MainActivity extends Activity {
                 while ((line = br.readLine()) != null) sb.append(line);
                 br.close();
 
-                JSONObject json = new JSONObject(sb.toString());
-                JSONArray arr = json.optJSONArray("data");
+                JSONObject root = new JSONObject(sb.toString());
+                JSONArray arr = root.optJSONArray("data");
                 if (arr != null) {
                     for (int i = 0; i < arr.length(); i++) {
                         JSONObject o = arr.getJSONObject(i);
-                        GalleryItem it = new GalleryItem();
-                        it.name = o.optString("name", "");
-                        if (it.name.isEmpty()) continue;
-                        it.cloudPath = o.optString("path", "/GoogleDrive/photos/" + it.name);
-                        it.size = o.optLong("size", 0);
-                        it.isVideo = o.optBoolean("is_video", false);
-                        it.thumbUrl = o.optString("thumb_url", "");
-                        it.fullUrl = o.optString("full_url", "");
-                        it.downloadUrl = o.optString("download_url", "");
-                        it.cloudStatus = o.optString("status", "synced");
-                        it.isOnCloud = true;
-                        it.bucket = "云端相册";
+                        String name = o.optString("name", "");
+                        if (name.isEmpty()) continue;
 
-                        String mod = o.optString("modified", "");
-                        it.timestampMs = parseIsoTime(mod);
-                        it.dayGroupTitle = formatDayGroupTitle(it.timestampMs);
-                        map.put(it.name, it);
+                        GalleryItem item = new GalleryItem();
+                        item.name = name;
+                        item.size = o.optLong("size", 0);
+                        item.cloudUrl = o.optString("url", "");
+                        item.dateTaken = o.optLong("modified", System.currentTimeMillis());
+                        item.isVideo = o.optBoolean("is_video", false) || name.toLowerCase().endsWith(".mp4") || name.toLowerCase().endsWith(".mov");
+                        item.bucketName = "Google Drive";
+                        list.add(item);
                     }
                 }
             }
@@ -1419,128 +614,497 @@ public class MainActivity extends Activity {
         } finally {
             if (conn != null) conn.disconnect();
         }
-        return map;
+        return list;
     }
 
-    private String formatDayGroupTitle(long tsMs) {
-        Calendar now = Calendar.getInstance();
+    private List<TimelineEntry> buildTimelineEntries(List<GalleryItem> items) {
+        List<TimelineEntry> entries = new ArrayList<>();
+        SimpleDateFormat dayFormat = new SimpleDateFormat("yyyyMMdd", Locale.getDefault());
+        String lastDayKey = "";
+        List<GalleryItem> currentGroup = new ArrayList<>();
+        TimelineEntry currentHeader = null;
+
+        for (int i = 0; i < items.size(); i++) {
+            GalleryItem item = items.get(i);
+            String dayKey = dayFormat.format(new Date(item.dateTaken));
+            if (!dayKey.equals(lastDayKey)) {
+                lastDayKey = dayKey;
+                currentGroup.clear();
+
+                currentHeader = new TimelineEntry();
+                currentHeader.type = TimelineEntry.TYPE_HEADER;
+                currentHeader.headerTitle = formatTimelineHeader(item.dateTaken);
+                entries.add(currentHeader);
+            }
+
+            currentGroup.add(item);
+            if (currentHeader != null) {
+                currentHeader.headerSub = currentGroup.size() + " 张照片与视频";
+            }
+
+            TimelineEntry pEntry = new TimelineEntry();
+            pEntry.type = TimelineEntry.TYPE_PHOTO;
+            pEntry.item = item;
+            pEntry.photoIndex = i;
+            entries.add(pEntry);
+        }
+        return entries;
+    }
+
+    private String formatTimelineHeader(long time) {
         Calendar target = Calendar.getInstance();
-        target.setTimeInMillis(tsMs);
+        target.setTimeInMillis(time);
 
-        if (now.get(Calendar.YEAR) == target.get(Calendar.YEAR)) {
-            int dayDiff = now.get(Calendar.DAY_OF_YEAR) - target.get(Calendar.DAY_OF_YEAR);
-            if (dayDiff == 0) return "今天";
-            if (dayDiff == 1) return "昨天";
-            SimpleDateFormat sdf = new SimpleDateFormat("M月d日 EEEE", Locale.CHINA);
-            return sdf.format(new Date(tsMs));
-        }
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy年M月d日", Locale.CHINA);
-        return sdf.format(new Date(tsMs));
+        Calendar today = Calendar.getInstance();
+        if (isSameDay(target, today)) return "今天";
+
+        today.add(Calendar.DAY_OF_YEAR, -1);
+        if (isSameDay(target, today)) return "昨天";
+
+        SimpleDateFormat f = target.get(Calendar.YEAR) == Calendar.getInstance().get(Calendar.YEAR)
+                ? new SimpleDateFormat("M月d日 EEEE", Locale.CHINESE)
+                : new SimpleDateFormat("yyyy年M月d日", Locale.CHINESE);
+        return f.format(new Date(time));
     }
 
-    private long parseIsoTime(String iso) {
-        if (iso == null || iso.length() < 19) return System.currentTimeMillis();
-        try {
-            String clean = iso.substring(0, 19).replace("T", " ");
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
-            Date d = sdf.parse(clean);
-            return d != null ? d.getTime() + 8 * 3600 * 1000L : System.currentTimeMillis();
-        } catch (Exception e) {
-            return System.currentTimeMillis();
-        }
+    private boolean isSameDay(Calendar a, Calendar b) {
+        return a.get(Calendar.YEAR) == b.get(Calendar.YEAR) && a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR);
     }
 
-    private void applyFilterAndRefreshTimeline() {
-        filteredItems.clear();
+    private List<AlbumCard> buildAlbumCards(List<GalleryItem> items) {
+        List<AlbumCard> cards = new ArrayList<>();
+
+        // Virtual 1: Cloud Backed Up
         int cloudCount = 0;
+        Uri cloudCover = null;
+        String cloudCoverUrl = null;
+        for (GalleryItem item : items) {
+            if (!item.isLocalOnly()) {
+                cloudCount++;
+                if (cloudCover == null && item.uri != null) cloudCover = item.uri;
+                if (cloudCoverUrl == null && item.cloudUrl != null) cloudCoverUrl = item.cloudUrl;
+            }
+        }
+        AlbumCard acCloud = new AlbumCard();
+        acCloud.title = "云端已备份";
+        acCloud.countText = cloudCount + " 个项目 · Google Drive";
+        acCloud.iconRes = R.drawable.ic_m3_cloud_done;
+        acCloud.coverUri = cloudCover;
+        acCloud.coverUrl = cloudCoverUrl;
+        acCloud.isVirtual = true;
+        cards.add(acCloud);
 
-        Set<String> enabledBuckets = BackupState.get(this).getSelectedBuckets();
-        Set<String> favKeys = BackupState.get(this).getFavoritesSet();
+        // Virtual 2: Favorites
+        int favCount = 0;
+        Uri favCover = null;
+        String favCoverUrl = null;
+        Set<String> favs = BackupState.get(this).getFavoritesSet();
+        for (GalleryItem item : items) {
+            if (favs.contains(item.getUniqueKey())) {
+                favCount++;
+                if (favCover == null && item.uri != null) favCover = item.uri;
+                if (favCoverUrl == null && item.cloudUrl != null) favCoverUrl = item.cloudUrl;
+            }
+        }
+        AlbumCard acFav = new AlbumCard();
+        acFav.title = "我的收藏";
+        acFav.countText = favCount + " 个收藏项目";
+        acFav.iconRes = R.drawable.ic_m3_star_filled;
+        acFav.coverUri = favCover;
+        acFav.coverUrl = favCoverUrl;
+        acFav.isVirtual = true;
+        cards.add(acFav);
 
-        synchronized (allItems) {
-            for (GalleryItem it : allItems) {
-                boolean inMainTimeline = it.isOnCloud
-                        || enabledBuckets.contains(it.bucket)
-                        || "Camera".equalsIgnoreCase(it.bucket)
-                        || "DCIM".equalsIgnoreCase(it.bucket);
+        // Virtual 3: Videos
+        int vidCount = 0;
+        Uri vidCover = null;
+        for (GalleryItem item : items) {
+            if (item.isVideo) {
+                vidCount++;
+                if (vidCover == null && item.uri != null) vidCover = item.uri;
+            }
+        }
+        AlbumCard acVid = new AlbumCard();
+        acVid.title = "视频合辑";
+        acVid.countText = vidCount + " 个视频";
+        acVid.iconRes = R.drawable.ic_m3_play;
+        acVid.coverUri = vidCover;
+        acVid.isVirtual = true;
+        cards.add(acVid);
 
-                if (it.isOnCloud) cloudCount++;
+        // Group by Bucket
+        Map<String, List<GalleryItem>> buckets = new LinkedHashMap<>();
+        for (GalleryItem item : items) {
+            String b = item.bucketName != null ? item.bucketName : "未分类";
+            if (!buckets.containsKey(b)) buckets.put(b, new ArrayList<GalleryItem>());
+            buckets.get(b).add(item);
+        }
 
-                if ("cloud".equals(currentFilter)) {
-                    if (it.isOnCloud) filteredItems.add(it);
-                } else if ("local".equals(currentFilter)) {
-                    if (!it.isOnCloud && it.localUri != null && inMainTimeline) filteredItems.add(it);
-                } else if ("video".equals(currentFilter)) {
-                    if (it.isVideo && inMainTimeline) filteredItems.add(it);
-                } else if ("fav".equals(currentFilter)) {
-                    if (favKeys.contains(it.getUniqueKey())) filteredItems.add(it);
-                } else if (currentFilter.startsWith("bucket:")) {
-                    String targetB = currentFilter.substring(7);
-                    if (targetB.equals(it.bucket)) filteredItems.add(it);
+        Set<String> selectedBuckets = BackupState.get(this).getSelectedBuckets();
+        for (Map.Entry<String, List<GalleryItem>> e : buckets.entrySet()) {
+            if (e.getKey().equals("Google Drive")) continue;
+            AlbumCard ac = new AlbumCard();
+            ac.title = e.getKey();
+            ac.countText = e.getValue().size() + " 项内容";
+            ac.bucketName = e.getKey();
+            ac.iconRes = R.drawable.ic_m3_albums;
+            ac.autoBackup = selectedBuckets.contains(e.getKey()) || selectedBuckets.contains("ALL");
+            if (!e.getValue().isEmpty()) {
+                ac.coverUri = e.getValue().get(0).uri;
+                ac.coverUrl = e.getValue().get(0).cloudUrl;
+            }
+            cards.add(ac);
+        }
+
+        return cards;
+    }
+
+    /**
+     * Timeline RecyclerView Adapter (Google MD3 Gallery Layout).
+     */
+    private class TimelineAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+
+        @Override
+        public int getItemViewType(int position) {
+            return timelineEntries.get(position).type;
+        }
+
+        @NonNull
+        @Override
+        public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            if (viewType == TimelineEntry.TYPE_HEADER) {
+                LinearLayout header = new LinearLayout(parent.getContext());
+                header.setOrientation(LinearLayout.VERTICAL);
+                header.setPadding(dp(16), dp(22), dp(16), dp(8));
+
+                TextView tvTitle = new TextView(parent.getContext());
+                tvTitle.setTextColor(Color.parseColor("#E2E2E9"));
+                tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
+                tvTitle.setTypeface(null, Typeface.BOLD);
+
+                TextView tvSub = new TextView(parent.getContext());
+                tvSub.setTextColor(Color.parseColor("#8E9099"));
+                tvSub.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+
+                header.addView(tvTitle);
+                header.addView(tvSub);
+                return new HeaderViewHolder(header, tvTitle, tvSub);
+            } else {
+                FrameLayout cell = new FrameLayout(parent.getContext());
+                int m = dp(1);
+                ViewGroup.MarginLayoutParams mlp = new ViewGroup.MarginLayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0);
+                mlp.setMargins(m, m, m, m);
+                cell.setLayoutParams(mlp);
+
+                ImageView iv = new ImageView(parent.getContext());
+                iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                cell.addView(iv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                // Cloud-done subtle badge
+                ImageView ivCloud = new ImageView(parent.getContext());
+                ivCloud.setImageResource(R.drawable.ic_m3_cloud_done);
+                ivCloud.setColorFilter(Color.parseColor("#A8C7FA"));
+                ivCloud.setBackground(makeRoundRect("#99000000", dp(10)));
+                ivCloud.setPadding(dp(3), dp(3), dp(3), dp(3));
+                FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.BOTTOM | Gravity.RIGHT);
+                clp.setMargins(0, 0, dp(4), dp(4));
+                cell.addView(ivCloud, clp);
+
+                // Video duration badge
+                TextView tvDur = new TextView(parent.getContext());
+                tvDur.setTextColor(Color.WHITE);
+                tvDur.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 10);
+                tvDur.setTypeface(null, Typeface.BOLD);
+                tvDur.setBackground(makeRoundRect("#99000000", dp(8)));
+                tvDur.setPadding(dp(6), dp(2), dp(6), dp(2));
+                FrameLayout.LayoutParams vlp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.LEFT);
+                vlp.setMargins(dp(4), 0, 0, dp(4));
+                cell.addView(tvDur, vlp);
+
+                return new PhotoViewHolder(cell, iv, ivCloud, tvDur);
+            }
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
+            TimelineEntry entry = timelineEntries.get(position);
+            if (holder instanceof HeaderViewHolder) {
+                HeaderViewHolder hh = (HeaderViewHolder) holder;
+                hh.tvTitle.setText(entry.headerTitle);
+                hh.tvSub.setText(entry.headerSub != null ? entry.headerSub : "");
+            } else if (holder instanceof PhotoViewHolder) {
+                final PhotoViewHolder ph = (PhotoViewHolder) holder;
+                final GalleryItem item = entry.item;
+
+                // Adjust square height dynamically
+                int screenW = getResources().getDisplayMetrics().widthPixels;
+                int size = screenW / gridColumns;
+                ViewGroup.LayoutParams lp = ph.itemView.getLayoutParams();
+                lp.width = size;
+                lp.height = size;
+                ph.itemView.setLayoutParams(lp);
+
+                Object model = item.uri != null ? item.uri : item.cloudUrl;
+                Glide.with(MainActivity.this)
+                        .load(model)
+                        .centerCrop()
+                        .diskCacheStrategy(DiskCacheStrategy.ALL)
+                        .into(ph.ivThumb);
+
+                ph.ivCloudBadge.setVisibility(item.isLocalOnly() ? View.GONE : View.VISIBLE);
+
+                if (item.isVideo) {
+                    ph.tvDuration.setVisibility(View.VISIBLE);
+                    ph.tvDuration.setText(formatDuration(item.durationMs));
                 } else {
-                    if (inMainTimeline) filteredItems.add(it);
+                    ph.tvDuration.setVisibility(View.GONE);
+                }
+
+                final int pIdx = entry.photoIndex;
+                ph.itemView.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        openPhotoViewer(allMediaItems, pIdx);
+                    }
+                });
+            }
+        }
+
+        @Override
+        public int getItemCount() {
+            return timelineEntries.size();
+        }
+
+        class HeaderViewHolder extends RecyclerView.ViewHolder {
+            final TextView tvTitle;
+            final TextView tvSub;
+            HeaderViewHolder(View root, TextView t, TextView s) {
+                super(root);
+                tvTitle = t;
+                tvSub = s;
+            }
+        }
+
+        class PhotoViewHolder extends RecyclerView.ViewHolder {
+            final ImageView ivThumb;
+            final ImageView ivCloudBadge;
+            final TextView tvDuration;
+            PhotoViewHolder(View root, ImageView iv, ImageView ivC, TextView tvD) {
+                super(root);
+                ivThumb = iv;
+                ivCloudBadge = ivC;
+                tvDuration = tvD;
+            }
+        }
+    }
+
+    /**
+     * Albums Grid Adapter (Google Photos Library Style M3 Cards).
+     */
+    private class AlbumsAdapter extends RecyclerView.Adapter<AlbumsAdapter.AlbumViewHolder> {
+
+        @NonNull
+        @Override
+        public AlbumViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            MaterialCardView card = new MaterialCardView(parent.getContext());
+            card.setRadius(dp(16));
+            card.setCardElevation(dp(2));
+            card.setCardBackgroundColor(Color.parseColor("#1E2025"));
+            card.setStrokeColor(Color.parseColor("#33353A"));
+            card.setStrokeWidth(dp(1));
+
+            int m = dp(8);
+            ViewGroup.MarginLayoutParams mlp = new ViewGroup.MarginLayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            mlp.setMargins(m, m, m, m);
+            card.setLayoutParams(mlp);
+
+            LinearLayout root = new LinearLayout(parent.getContext());
+            root.setOrientation(LinearLayout.VERTICAL);
+
+            // Cover Image
+            ImageView ivCover = new ImageView(parent.getContext());
+            ivCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            root.addView(ivCover, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(130)));
+
+            // Text info container
+            LinearLayout info = new LinearLayout(parent.getContext());
+            info.setOrientation(LinearLayout.VERTICAL);
+            info.setPadding(dp(12), dp(10), dp(12), dp(12));
+
+            TextView tvTitle = new TextView(parent.getContext());
+            tvTitle.setTextColor(Color.parseColor("#E2E2E9"));
+            tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
+            tvTitle.setTypeface(null, Typeface.BOLD);
+            tvTitle.setSingleLine(true);
+            tvTitle.setEllipsize(TextUtils.TruncateAt.END);
+
+            TextView tvCount = new TextView(parent.getContext());
+            tvCount.setTextColor(Color.parseColor("#8E9099"));
+            tvCount.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
+
+            info.addView(tvTitle);
+            info.addView(tvCount);
+
+            // Auto-backup Material Switch
+            MaterialSwitch swBackup = new MaterialSwitch(parent.getContext());
+            swBackup.setText("自动备份");
+            swBackup.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
+            swBackup.setTextColor(Color.parseColor("#C4C6D0"));
+            info.addView(swBackup);
+
+            root.addView(info);
+            card.addView(root);
+            return new AlbumViewHolder(card, ivCover, tvTitle, tvCount, swBackup);
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull AlbumViewHolder holder, int position) {
+            final AlbumCard card = albumCards.get(position);
+            holder.tvTitle.setText(card.title);
+            holder.tvCount.setText(card.countText);
+
+            Object model = card.coverUri != null ? card.coverUri : card.coverUrl;
+            if (model != null) {
+                Glide.with(MainActivity.this)
+                        .load(model)
+                        .centerCrop()
+                        .diskCacheStrategy(DiskCacheStrategy.ALL)
+                        .into(holder.ivCover);
+            } else {
+                holder.ivCover.setImageResource(card.iconRes);
+                holder.ivCover.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+                holder.ivCover.setColorFilter(Color.parseColor("#A8C7FA"));
+            }
+
+            if (card.isVirtual) {
+                holder.swBackup.setVisibility(View.GONE);
+                holder.itemView.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        filterAndShowVirtualAlbum(card.title);
+                    }
+                });
+            } else {
+                holder.swBackup.setVisibility(View.VISIBLE);
+                holder.swBackup.setChecked(card.autoBackup);
+                holder.swBackup.setOnCheckedChangeListener((btn, isChecked) -> {
+                    card.autoBackup = isChecked;
+                    Set<String> sel = BackupState.get(MainActivity.this).getSelectedBuckets();
+                    if (isChecked) sel.add(card.bucketName);
+                    else sel.remove(card.bucketName);
+                    BackupState.get(MainActivity.this).saveConfig(
+                            BackupState.get(MainActivity.this).isAutoBackupEnabled(),
+                            BackupState.get(MainActivity.this).isWifiOnly(),
+                            BackupState.get(MainActivity.this).isIncludeVideos(),
+                            BackupState.get(MainActivity.this).getTargetFolder(),
+                            sel
+                    );
+                    Toast.makeText(MainActivity.this, (isChecked ? "已启用 " : "已关闭 ") + card.title + " 的自动备份", Toast.LENGTH_SHORT).show();
+                });
+
+                holder.itemView.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        filterAndShowBucketAlbum(card.bucketName);
+                    }
+                });
+            }
+        }
+
+        @Override
+        public int getItemCount() {
+            return albumCards.size();
+        }
+
+        class AlbumViewHolder extends RecyclerView.ViewHolder {
+            final ImageView ivCover;
+            final TextView tvTitle;
+            final TextView tvCount;
+            final MaterialSwitch swBackup;
+
+            AlbumViewHolder(View root, ImageView iv, TextView t, TextView c, MaterialSwitch sw) {
+                super(root);
+                ivCover = iv;
+                tvTitle = t;
+                tvCount = c;
+                swBackup = sw;
+            }
+        }
+    }
+
+    private void filterAndShowVirtualAlbum(String title) {
+        List<GalleryItem> filtered = new ArrayList<>();
+        if ("云端已备份".equals(title)) {
+            for (GalleryItem item : allMediaItems) if (!item.isLocalOnly()) filtered.add(item);
+        } else if ("我的收藏".equals(title)) {
+            Set<String> favs = BackupState.get(this).getFavoritesSet();
+            for (GalleryItem item : allMediaItems) if (favs.contains(item.getUniqueKey())) filtered.add(item);
+        } else if ("视频合辑".equals(title)) {
+            for (GalleryItem item : allMediaItems) if (item.isVideo) filtered.add(item);
+        }
+        if (filtered.isEmpty()) {
+            Toast.makeText(this, title + " 暂无内容", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        openPhotoViewer(filtered, 0);
+    }
+
+    private void filterAndShowBucketAlbum(String bucketName) {
+        List<GalleryItem> filtered = new ArrayList<>();
+        for (GalleryItem item : allMediaItems) {
+            if (bucketName.equals(item.bucketName)) filtered.add(item);
+        }
+        if (filtered.isEmpty()) {
+            Toast.makeText(this, "该目录暂无内容", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        openPhotoViewer(filtered, 0);
+    }
+
+    private void openPhotoViewer(List<GalleryItem> list, int index) {
+        PhotoViewerDialog dialog = new PhotoViewerDialog(this, list, index, new PhotoViewerDialog.ViewerCallbacks() {
+            @Override
+            public void onUploadItem(GalleryItem item) {
+                if (item.uri != null) {
+                    synchronized (PhotoBackupService.pendingManualUris) {
+                        PhotoBackupService.pendingManualUris.add(item.uri);
+                    }
+                    Intent intent = new Intent(MainActivity.this, PhotoBackupService.class);
+                    intent.setAction(PhotoBackupService.ACTION_UPLOAD_URIS);
+                    intent.putExtra(PhotoBackupService.EXTRA_TARGET_FOLDER, BackupState.get(MainActivity.this).getTargetFolder());
+                    startService(intent);
                 }
             }
-        }
 
-        if (!BackupState.get(this).isRunning) {
-            tvCloudPill.setText("已备份 " + cloudCount + " 项");
-        }
-        rebuildTimelineRows();
-        tvEmptyState.setVisibility(filteredItems.isEmpty() ? View.VISIBLE : View.GONE);
-        timelineAdapter.notifyDataSetChanged();
-    }
-
-    // ==================== FULLSCREEN VIEWER INTEGRATION ====================
-
-    private void openViewerDialog(int startIndex) {
-        PhotoViewerDialog viewer = new PhotoViewerDialog(this, filteredItems, startIndex, new PhotoViewerDialog.ViewerCallbacks() {
             @Override
-            public Bitmap getCachedThumb(String key) {
-                return memoryCache.get(key);
+            public void onDownloadItem(GalleryItem item) {
+                if (!TextUtils.isEmpty(item.cloudUrl)) {
+                    DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+                    if (dm != null) {
+                        DownloadManager.Request req = new DownloadManager.Request(Uri.parse(item.cloudUrl));
+                        req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                        req.setDestinationInExternalPublicDir(Environment.DIRECTORY_PICTURES, item.name);
+                        dm.enqueue(req);
+                    }
+                }
             }
 
             @Override
-            public void loadHighResBitmap(final GalleryItem item, final PhotoViewerDialog.BitmapCallback cb) {
-                netExecutor.submit(new Runnable() {
+            public void onDeleteItem(final GalleryItem item, final Runnable onDeleted) {
+                executor.submit(new Runnable() {
                     @Override
                     public void run() {
-                        Bitmap fullBmp = null;
-                        if (item.localUri != null && !item.isVideo) {
-                            try {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                                    ImageDecoder.Source src = ImageDecoder.createSource(getContentResolver(), item.localUri);
-                                    fullBmp = ImageDecoder.decodeBitmap(src, new ImageDecoder.OnHeaderDecodedListener() {
-                                        @Override
-                                        public void onHeaderDecoded(ImageDecoder decoder, ImageDecoder.ImageInfo info, ImageDecoder.Source source) {
-                                            decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
-                                            int w = info.getSize().getWidth();
-                                            int h = info.getSize().getHeight();
-                                            if (w > 2200 || h > 2200) {
-                                                float r = Math.min(2200f / w, 2200f / h);
-                                                decoder.setTargetSize((int) (w * r), (int) (h * r));
-                                            }
-                                        }
-                                    });
-                                } else {
-                                    InputStream in = getContentResolver().openInputStream(item.localUri);
-                                    if (in != null) {
-                                        fullBmp = BitmapFactory.decodeStream(in);
-                                        in.close();
-                                    }
-                                }
-                            } catch (Exception ignored) {}
-                        }
-
-                        if (fullBmp == null && item.fullUrl != null && !item.fullUrl.isEmpty() && !item.isVideo) {
-                            fullBmp = loadNetworkBitmapWithDiskCache(item.fullUrl, 2048);
-                        }
-
-                        final Bitmap finalBmp = fullBmp;
-                        uiHandler.post(new Runnable() {
+                        boolean ok = deletePhotoEverywhere(item);
+                        mainHandler.post(new Runnable() {
                             @Override
                             public void run() {
-                                cb.onLoaded(finalBmp);
+                                if (ok) {
+                                    Toast.makeText(MainActivity.this, "已成功删除: " + item.name, Toast.LENGTH_SHORT).show();
+                                    if (onDeleted != null) onDeleted.run();
+                                    loadAllMediaData();
+                                } else {
+                                    Toast.makeText(MainActivity.this, "删除失败或已被删除", Toast.LENGTH_SHORT).show();
+                                }
                             }
                         });
                     }
@@ -1548,595 +1112,169 @@ public class MainActivity extends Activity {
             }
 
             @Override
-            public void onUploadItem(GalleryItem item) {
-                if (item.localUri == null) return;
-                synchronized (PhotoBackupService.pendingManualUris) {
-                    PhotoBackupService.pendingManualUris.add(item.localUri);
-                }
-                Toast.makeText(MainActivity.this, "已加入云端备份队列: " + item.name, Toast.LENGTH_SHORT).show();
-                startBackupService(PhotoBackupService.ACTION_UPLOAD_URIS, "/GoogleDrive/photos");
+            public void onToggleFavorite(GalleryItem item, boolean fav) {
+                BackupState.get(MainActivity.this).toggleFavorite(item.getUniqueKey());
             }
 
             @Override
-            public void onDownloadItem(GalleryItem item) {
-                if (item.downloadUrl != null && !item.downloadUrl.isEmpty()) {
-                    enqueueSystemDownload(item.downloadUrl, item.name);
-                }
-            }
-
-            @Override
-            public void onDeleteItem(GalleryItem item) {
-                selectedKeys.clear();
-                selectedKeys.add(item.getUniqueKey());
-                deleteSelectedCloudItems();
-            }
-
-            @Override
-            public boolean isFavorite(String key) {
-                return BackupState.get(MainActivity.this).isFavorite(key);
-            }
-
-            @Override
-            public void toggleFavorite(String key) {
-                BackupState.get(MainActivity.this).toggleFavorite(key);
-                rebuildAlbumCards();
+            public boolean isFavorite(GalleryItem item) {
+                return BackupState.get(MainActivity.this).isFavorite(item.getUniqueKey());
             }
         });
-        viewer.show();
+        dialog.show();
     }
 
-    // ==================== THUMBNAIL LOADER & CACHE ====================
-
-    private void loadItemThumbnail(final GalleryItem item, final ImageView iv, final CellHolder ch) {
-        final String key = item.getUniqueKey();
-        Bitmap cached = memoryCache.get(key);
-        if (cached != null && !cached.isRecycled()) {
-            iv.setImageBitmap(cached);
-            return;
-        }
-
-        iv.setImageDrawable(null);
-        thumbExecutor.submit(new Runnable() {
-            @Override
-            public void run() {
-                if (ch != null && !key.equals(ch.boundKey)) return;
-                Bitmap bmp = null;
-
-                if (item.localUri != null) {
-                    try {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            bmp = getContentResolver().loadThumbnail(item.localUri, new Size(340, 340), null);
-                        } else {
-                            if (item.isVideo) {
-                                bmp = MediaStore.Video.Thumbnails.getThumbnail(getContentResolver(), item.mediaId, MediaStore.Video.Thumbnails.MINI_KIND, null);
-                            } else {
-                                bmp = MediaStore.Images.Thumbnails.getThumbnail(getContentResolver(), item.mediaId, MediaStore.Images.Thumbnails.MINI_KIND, null);
-                            }
-                        }
-                    } catch (Exception ignored) {}
-                }
-
-                if (bmp == null && item.thumbUrl != null && !item.thumbUrl.isEmpty()) {
-                    bmp = loadNetworkBitmapWithDiskCache(item.thumbUrl, 360);
-                }
-
-                if (bmp != null) {
-                    memoryCache.put(key, bmp);
-                    final Bitmap finalBmp = bmp;
-                    uiHandler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (ch == null || key.equals(ch.boundKey)) {
-                                iv.setImageBitmap(finalBmp);
-                            }
-                        }
-                    });
-                }
-            }
-        });
-    }
-
-    private Bitmap loadNetworkBitmapWithDiskCache(String urlStr, int maxDim) {
+    private boolean deletePhotoEverywhere(GalleryItem item) {
+        boolean ok = false;
         try {
-            File cacheDir = new File(getCacheDir(), "cloud_thumbs");
-            if (!cacheDir.exists()) cacheDir.mkdirs();
-            String hash = md5(urlStr + "_" + maxDim);
-            File diskFile = new File(cacheDir, hash + ".jpg");
-
-            if (diskFile.exists() && diskFile.length() > 100) {
-                Bitmap b = decodeSampledFile(diskFile, maxDim);
-                if (b != null) return b;
+            if (item.uri != null) {
+                getContentResolver().delete(item.uri, null, null);
+                ok = true;
             }
+        } catch (Exception ignored) {}
 
-            HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-            conn.setRequestProperty("User-Agent", USER_AGENT);
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(15000);
-            if (conn.getResponseCode() == 200) {
-                InputStream in = conn.getInputStream();
-                OutputStream out = new FileOutputStream(diskFile);
-                byte[] buf = new byte[16384];
-                int n;
-                while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
-                out.flush();
-                out.close();
-                in.close();
-                conn.disconnect();
-                return decodeSampledFile(diskFile, maxDim);
-            }
+        try {
+            URL url = new URL(BASE_API + "/api/cloud_transfer/delete_photo");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json");
+            JSONObject post = new JSONObject();
+            post.put("name", item.name);
+            post.put("path", BackupState.get(this).getTargetFolder() + "/" + item.name);
+            OutputStream os = conn.getOutputStream();
+            os.write(post.toString().getBytes("UTF-8"));
+            os.flush();
+            os.close();
+            if (conn.getResponseCode() == 200) ok = true;
             conn.disconnect();
         } catch (Exception ignored) {}
-        return null;
+
+        return ok;
     }
 
-    private Bitmap decodeSampledFile(File f, int maxDim) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                ImageDecoder.Source src = ImageDecoder.createSource(f);
-                final int targetMax = maxDim;
-                return ImageDecoder.decodeBitmap(src, new ImageDecoder.OnHeaderDecodedListener() {
-                    @Override
-                    public void onHeaderDecoded(ImageDecoder decoder, ImageDecoder.ImageInfo info, ImageDecoder.Source source) {
-                        decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
-                        int w = info.getSize().getWidth();
-                        int h = info.getSize().getHeight();
-                        if (w > targetMax || h > targetMax) {
-                            float ratio = Math.min((float) targetMax / w, (float) targetMax / h);
-                            decoder.setTargetSize(Math.max(1, (int) (w * ratio)), Math.max(1, (int) (h * ratio)));
-                        }
-                    }
-                });
-            }
-            BitmapFactory.Options opts = new BitmapFactory.Options();
-            opts.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(f.getAbsolutePath(), opts);
-            int inSample = 1;
-            while (opts.outWidth / inSample > maxDim || opts.outHeight / inSample > maxDim) inSample *= 2;
-            opts.inJustDecodeBounds = false;
-            opts.inSampleSize = inSample;
-            return BitmapFactory.decodeFile(f.getAbsolutePath(), opts);
-        } catch (Exception e) {
-            return null;
-        }
-    }
+    private void renderSyncDashboard() {
+        syncContainer.removeAllViews();
 
-    // ==================== BATCH UPLOAD & CLOUD DELETE ====================
+        final BackupState state = BackupState.get(this);
 
-    private void uploadSelectedLocalItems() {
-        List<Uri> uris = new ArrayList<>();
-        for (GalleryItem it : filteredItems) {
-            if (selectedKeys.contains(it.getUniqueKey()) && it.localUri != null) {
-                uris.add(it.localUri);
-            }
-        }
-        if (uris.isEmpty()) {
-            Toast.makeText(this, "请勾选手机本地的照片或视频进行上传", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        synchronized (PhotoBackupService.pendingManualUris) {
-            PhotoBackupService.pendingManualUris.addAll(uris);
-        }
-        selectionMode = false;
-        selectedKeys.clear();
-        updateSelectionUi();
-        Toast.makeText(this, "开始直传 " + uris.size() + " 项至云端", Toast.LENGTH_SHORT).show();
-        startBackupService(PhotoBackupService.ACTION_UPLOAD_URIS, "/GoogleDrive/photos");
-    }
+        // M3 Elevated Card for Cloud Engine Status
+        MaterialCardView cardStatus = new MaterialCardView(this);
+        cardStatus.setRadius(dp(20));
+        cardStatus.setCardBackgroundColor(Color.parseColor("#1E2025"));
+        cardStatus.setStrokeColor(Color.parseColor("#33353A"));
+        cardStatus.setStrokeWidth(dp(1));
+        cardStatus.setCardElevation(dp(2));
 
-    private void deleteSelectedCloudItems() {
-        final List<String> cloudPaths = new ArrayList<>();
-        final Set<String> deletedNames = new HashSet<>();
-        synchronized (allItems) {
-            for (GalleryItem it : allItems) {
-                if (selectedKeys.contains(it.getUniqueKey()) && it.isOnCloud) {
-                    String p = (it.cloudPath != null && !it.cloudPath.isEmpty()) ? it.cloudPath : ("/GoogleDrive/photos/" + it.name);
-                    cloudPaths.add(p);
-                    deletedNames.add(it.name);
-                    it.isOnCloud = false;
-                    it.cloudStatus = "";
-                }
-            }
-            for (int i = allItems.size() - 1; i >= 0; i--) {
-                GalleryItem it = allItems.get(i);
-                if (deletedNames.contains(it.name) && it.localUri == null) {
-                    allItems.remove(i);
-                }
-            }
-        }
+        LinearLayout statusBox = new LinearLayout(this);
+        statusBox.setOrientation(LinearLayout.VERTICAL);
+        statusBox.setPadding(dp(18), dp(16), dp(18), dp(16));
 
-        selectionMode = false;
-        selectedKeys.clear();
-        updateSelectionUi();
-        applyFilterAndRefreshTimeline();
-        rebuildAlbumCards();
+        TextView tvState = new TextView(this);
+        tvState.setText(state.isRunning ? "⚡ 正在直传直备中..." : "☁️ 云端归档引擎就绪");
+        tvState.setTextColor(Color.parseColor("#A8C7FA"));
+        tvState.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
+        tvState.setTypeface(null, Typeface.BOLD);
 
-        if (cloudPaths.isEmpty()) {
-            Toast.makeText(this, "所选照片仅在本地，未占用云端空间", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        Toast.makeText(this, "已从云端移除 " + cloudPaths.size() + " 项", Toast.LENGTH_SHORT).show();
+        TextView tvDesc = new TextView(this);
+        tvDesc.setText("手机直传 Cloudflare R2，通过 Worker 自动秒级归档到 Google Drive，零 VPN 极速访问，0 字节腾讯云服务器磁盘占用。");
+        tvDesc.setTextColor(Color.parseColor("#8E9099"));
+        tvDesc.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+        tvDesc.setPadding(0, dp(6), 0, dp(12));
 
-        netExecutor.submit(new Runnable() {
+        statusBox.addView(tvState);
+        statusBox.addView(tvDesc);
+
+        // Action Buttons
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+
+        TextView btnScan = new TextView(this);
+        btnScan.setText("🚀 立即扫描并备份");
+        btnScan.setTextColor(Color.parseColor("#062E6F"));
+        btnScan.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
+        btnScan.setTypeface(null, Typeface.BOLD);
+        btnScan.setBackground(makeRoundRect(Color.parseColor("#A8C7FA"), dp(12)));
+        btnScan.setPadding(dp(16), dp(10), dp(16), dp(10));
+        btnScan.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void run() {
-                HttpURLConnection conn = null;
-                try {
-                    JSONObject body = new JSONObject();
-                    JSONArray arr = new JSONArray();
-                    for (String p : cloudPaths) arr.put(p);
-                    body.put("paths", arr);
-
-                    conn = (HttpURLConnection) new URL(BASE_API + "/api/cloud_transfer/delete_photo").openConnection();
-                    conn.setRequestMethod("POST");
-                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-                    conn.setRequestProperty("User-Agent", USER_AGENT);
-                    conn.setDoOutput(true);
-                    conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
-                    conn.getResponseCode();
-                } catch (Exception ignored) {
-                } finally {
-                    if (conn != null) conn.disconnect();
-                }
-            }
-        });
-    }
-
-    // ==================== STATUS POLLING & TAB NAVIGATION ====================
-
-    private void pollBackupStatus() {
-        BackupState st = BackupState.get(this);
-        String speedMb = st.currentSpeedBps > 0 ? String.format(Locale.US, "%.2f MB/s", st.currentSpeedBps / 1048576.0) : (st.currentProgress + "%");
-
-        if (st.isRunning) {
-            liveSyncBanner.setVisibility(View.VISIBLE);
-            tvLiveSyncTitle.setText(st.statusText + (st.currentFile.isEmpty() ? "" : (" · " + st.currentFile)));
-            tvLiveSyncSpeed.setText(speedMb);
-            pbLiveSync.setProgress(Math.max(5, st.currentProgress));
-            tvCloudPill.setText("备份中 " + st.sessionUploadedCount + "/" + st.sessionTotalCount);
-            if (btnBkStop != null) btnBkStop.setVisibility(View.VISIBLE);
-        } else {
-            liveSyncBanner.setVisibility(View.GONE);
-            if (btnBkStop != null) btnBkStop.setVisibility(View.GONE);
-            if (wasRunningLastPoll) {
-                loadUnifiedTimeline(true);
-            }
-        }
-        wasRunningLastPoll = st.isRunning;
-
-        if (tvBkBadge != null) {
-            tvBkBadge.setText(st.statusText);
-            pbBkBar.setProgress(st.currentProgress);
-            try {
-                JSONObject j = new JSONObject(st.toJsonString());
-                tvBkSummary.setText("已累计备份 " + j.optInt("totalBackedUpCount", 0) + " 项" + (st.currentFile.isEmpty() ? "" : (" · 当前: " + st.currentFile)));
-                JSONArray logs = j.optJSONArray("logs");
-                if (logs != null && logs.length() > 0) {
-                    StringBuilder sb = new StringBuilder();
-                    for (int i = 0; i < Math.min(15, logs.length()); i++) {
-                        sb.append(logs.getString(i)).append("\n");
-                    }
-                    tvBkLogs.setText(sb.toString().trim());
-                }
-            } catch (Exception ignored) {}
-        }
-    }
-
-    private LinearLayout createVectorTabItem(int iconType, String label, boolean active) {
-        LinearLayout item = new LinearLayout(this);
-        item.setOrientation(LinearLayout.VERTICAL);
-        item.setGravity(Gravity.CENTER);
-        item.setPadding(0, dp(6), 0, dp(6));
-
-        int color = Color.parseColor(active ? "#38BDF8" : "#64748B");
-        ImageView icon = new ImageView(this);
-        icon.setImageDrawable(VectorIcons.create(iconType, color, dp(22)));
-
-        TextView txt = new TextView(this);
-        txt.setText(label);
-        txt.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-        txt.setIncludeFontPadding(false);
-        txt.setPadding(0, dp(4), 0, 0);
-        txt.setGravity(Gravity.CENTER);
-        txt.setSingleLine(true);
-        txt.setTypeface(null, active ? Typeface.BOLD : Typeface.NORMAL);
-        txt.setTextColor(color);
-
-        item.addView(icon, new LinearLayout.LayoutParams(dp(22), dp(22)));
-        item.addView(txt);
-        return item;
-    }
-
-    public void selectTab(final String tab) {
-        currentTab = tab;
-        boolean isPhotos = "photos".equals(tab);
-        boolean isAlbums = "albums".equals(tab);
-        boolean isBackup = "backup".equals(tab);
-        boolean isFiles = "files".equals(tab);
-
-        int cActive = Color.parseColor("#38BDF8");
-        int cMuted = Color.parseColor("#64748B");
-
-        navIconPhotos.setImageDrawable(VectorIcons.create(VectorIcons.ICON_PHOTOS, isPhotos ? cActive : cMuted, dp(22)));
-        navTextPhotos.setTextColor(isPhotos ? cActive : cMuted);
-        navTextPhotos.setTypeface(null, isPhotos ? Typeface.BOLD : Typeface.NORMAL);
-
-        navIconAlbums.setImageDrawable(VectorIcons.create(VectorIcons.ICON_ALBUMS, isAlbums ? cActive : cMuted, dp(22)));
-        navTextAlbums.setTextColor(isAlbums ? cActive : cMuted);
-        navTextAlbums.setTypeface(null, isAlbums ? Typeface.BOLD : Typeface.NORMAL);
-
-        navIconBackup.setImageDrawable(VectorIcons.create(VectorIcons.ICON_CLOUD_SYNC, isBackup ? cActive : cMuted, dp(22)));
-        navTextBackup.setTextColor(isBackup ? cActive : cMuted);
-        navTextBackup.setTypeface(null, isBackup ? Typeface.BOLD : Typeface.NORMAL);
-
-        navIconFiles.setImageDrawable(VectorIcons.create(VectorIcons.ICON_DRIVE, isFiles ? cActive : cMuted, dp(22)));
-        navTextFiles.setTextColor(isFiles ? cActive : cMuted);
-        navTextFiles.setTypeface(null, isFiles ? Typeface.BOLD : Typeface.NORMAL);
-
-        viewPhotosTab.setVisibility(isPhotos ? View.VISIBLE : View.GONE);
-        viewAlbumsTab.setVisibility(isAlbums ? View.VISIBLE : View.GONE);
-        viewBackupTab.setVisibility(isBackup ? View.VISIBLE : View.GONE);
-        alistWebView.setVisibility(isFiles ? View.VISIBLE : View.GONE);
-
-        if (isAlbums) {
-            rebuildAlbumCards();
-        } else if (isFiles && !alistLoaded) {
-            alistLoaded = true;
-            alistWebView.loadUrl("https://pan.czyxh.top/GoogleDrive");
-        }
-    }
-
-    private void configureAlistWebView(WebView wv) {
-        WebSettings ws = wv.getSettings();
-        ws.setJavaScriptEnabled(true);
-        ws.setDomStorageEnabled(true);
-        ws.setDatabaseEnabled(true);
-        ws.setAllowFileAccess(true);
-        ws.setAllowContentAccess(true);
-        ws.setLoadWithOverviewMode(false);
-        ws.setUseWideViewPort(false);
-        ws.setTextZoom(100);
-        ws.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        ws.setUserAgentString(USER_AGENT);
-
-        CookieManager cm = CookieManager.getInstance();
-        cm.setAcceptCookie(true);
-        cm.setAcceptThirdPartyCookies(wv, true);
-        wv.setBackgroundColor(Color.parseColor("#0B0F17"));
-
-        wv.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                String u = request.getUrl().toString();
-                if (u.startsWith("http://") || u.startsWith("https://")) return false;
-                try {
-                    startActivity(new Intent(Intent.ACTION_VIEW, request.getUrl()));
-                } catch (Exception ignored) {}
-                return true;
-            }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                String js = "(function(){var s=document.createElement('style');s.innerHTML='#ct-fab-wrap{display:none!important;}';document.head.appendChild(s);})();";
-                view.evaluateJavascript(js, null);
+            public void onClick(View v) {
+                Intent it = new Intent(MainActivity.this, PhotoBackupService.class);
+                it.setAction(PhotoBackupService.ACTION_SCAN_AND_BACKUP);
+                startService(it);
+                Toast.makeText(MainActivity.this, "已触发后台相册扫描备份", Toast.LENGTH_SHORT).show();
+                renderSyncDashboard();
             }
         });
 
-        wv.setWebChromeClient(new WebChromeClient() {
+        TextView btnStop = new TextView(this);
+        btnStop.setText("⏹️ 停止");
+        btnStop.setTextColor(Color.parseColor("#F2B8B5"));
+        btnStop.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
+        btnStop.setTypeface(null, Typeface.BOLD);
+        btnStop.setBackground(makeRoundRect(Color.parseColor("#601410"), dp(12)));
+        btnStop.setPadding(dp(16), dp(10), dp(16), dp(10));
+        LinearLayout.LayoutParams stlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        stlp.leftMargin = dp(12);
+        btnStop.setOnClickListener(new View.OnClickListener() {
             @Override
-            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
-                if (webViewFilePathCallback != null) webViewFilePathCallback.onReceiveValue(null);
-                webViewFilePathCallback = filePathCallback;
-                try {
-                    Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-                    intent.addCategory(Intent.CATEGORY_OPENABLE);
-                    intent.setType("*/*");
-                    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-                    startActivityForResult(Intent.createChooser(intent, "选择要上传的文件"), REQ_WEBVIEW_FILE_CHOOSER);
-                } catch (Exception e) {
-                    webViewFilePathCallback = null;
-                    return false;
-                }
-                return true;
+            public void onClick(View v) {
+                Intent it = new Intent(MainActivity.this, PhotoBackupService.class);
+                it.setAction(PhotoBackupService.ACTION_STOP_BACKUP);
+                startService(it);
+                Toast.makeText(MainActivity.this, "已请求停止传输", Toast.LENGTH_SHORT).show();
+                renderSyncDashboard();
             }
         });
 
-        wv.setDownloadListener(new DownloadListener() {
-            @Override
-            public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
-                String filename = URLUtil.guessFileName(url, contentDisposition, mimeType);
-                enqueueSystemDownload(url, filename);
-            }
+        btnRow.addView(btnScan);
+        btnRow.addView(btnStop, stlp);
+        statusBox.addView(btnRow);
+
+        cardStatus.addView(statusBox);
+        syncContainer.addView(cardStatus);
+
+        // Config Switches
+        MaterialCardView cardOpts = new MaterialCardView(this);
+        cardOpts.setRadius(dp(20));
+        cardOpts.setCardBackgroundColor(Color.parseColor("#1E2025"));
+        cardOpts.setStrokeColor(Color.parseColor("#33353A"));
+        cardOpts.setStrokeWidth(dp(1));
+        LinearLayout.LayoutParams colp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        colp.topMargin = dp(16);
+        cardOpts.setLayoutParams(colp);
+
+        LinearLayout optsBox = new LinearLayout(this);
+        optsBox.setOrientation(LinearLayout.VERTICAL);
+        optsBox.setPadding(dp(18), dp(14), dp(18), dp(14));
+
+        MaterialSwitch swWifi = new MaterialSwitch(this);
+        swWifi.setText("仅在 Wi-Fi 网络下自动备份");
+        swWifi.setChecked(state.isWifiOnly());
+        swWifi.setTextColor(Color.parseColor("#E2E2E9"));
+        swWifi.setOnCheckedChangeListener((btn, isChecked) -> {
+            state.saveConfig(state.isAutoBackupEnabled(), isChecked, state.isIncludeVideos(), state.getTargetFolder(), state.getSelectedBuckets());
         });
+
+        MaterialSwitch swVid = new MaterialSwitch(this);
+        swVid.setText("包含视频备份");
+        swVid.setChecked(state.isIncludeVideos());
+        swVid.setTextColor(Color.parseColor("#E2E2E9"));
+        swVid.setOnCheckedChangeListener((btn, isChecked) -> {
+            state.saveConfig(state.isAutoBackupEnabled(), state.isWifiOnly(), isChecked, state.getTargetFolder(), state.getSelectedBuckets());
+        });
+
+        optsBox.addView(swWifi);
+        optsBox.addView(swVid);
+        cardOpts.addView(optsBox);
+        syncContainer.addView(cardOpts);
     }
 
-    // ==================== PERMISSIONS, DOWNLOADS & HELPERS ====================
-
-    private void pickFilesToUpload(String targetFolder, boolean mediaOnly) {
-        manualUploadTargetFolder = targetFolder;
-        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
-        if (mediaOnly) {
-            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
-        }
-        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        startActivityForResult(Intent.createChooser(intent, "选择要上传的照片或文件"), REQ_PICK_MANUAL_UPLOAD);
-    }
-
-    private void enqueueSystemDownload(String url, String filename) {
-        try {
-            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
-            req.setTitle(filename);
-            req.setDescription("正在通过边缘节点下载原文件...");
-            req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            req.addRequestHeader("User-Agent", USER_AGENT);
-            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename);
-            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            if (dm != null) {
-                dm.enqueue(req);
-                Toast.makeText(this, "已开始下载: " + filename, Toast.LENGTH_SHORT).show();
-            }
-        } catch (Exception e) {
-            try {
-                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-            } catch (Exception ignored) {}
-        }
-    }
-
-    private boolean hasPermissions() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            return checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED;
-        } else if (Build.VERSION.SDK_INT >= 23) {
-            return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
-        }
-        return true;
-    }
-
-    private void requestMediaPermissionsIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            List<String> perms = new ArrayList<>();
-            if (checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
-                perms.add(Manifest.permission.READ_MEDIA_IMAGES);
-            }
-            if (checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) != PackageManager.PERMISSION_GRANTED) {
-                perms.add(Manifest.permission.READ_MEDIA_VIDEO);
-            }
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                perms.add(Manifest.permission.POST_NOTIFICATIONS);
-            }
-            if (!perms.isEmpty()) {
-                requestPermissions(perms.toArray(new String[0]), REQ_PERMS);
-            }
-        } else if (Build.VERSION.SDK_INT >= 23) {
-            if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQ_PERMS);
-            }
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_PERMS) {
-            loadUnifiedTimeline(false);
-        }
-    }
-
-    private void startBackupService(String action, String targetFolder) {
-        Intent i = new Intent(this, PhotoBackupService.class);
-        i.setAction(action);
-        if (targetFolder != null) i.putExtra(PhotoBackupService.EXTRA_TARGET_FOLDER, targetFolder);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(i);
-        } else {
-            startService(i);
-        }
-    }
-
-    private void stopBackupServiceNow() {
-        Intent i = new Intent(this, PhotoBackupService.class);
-        i.setAction(PhotoBackupService.ACTION_STOP_BACKUP);
-        startService(i);
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQ_WEBVIEW_FILE_CHOOSER) {
-            if (webViewFilePathCallback == null) return;
-            Uri[] results = null;
-            if (resultCode == Activity.RESULT_OK && data != null) {
-                if (data.getClipData() != null) {
-                    ClipData clip = data.getClipData();
-                    results = new Uri[clip.getItemCount()];
-                    for (int i = 0; i < clip.getItemCount(); i++) results[i] = clip.getItemAt(i).getUri();
-                } else if (data.getData() != null) {
-                    results = new Uri[]{data.getData()};
-                }
-            }
-            webViewFilePathCallback.onReceiveValue(results);
-            webViewFilePathCallback = null;
-        } else if (requestCode == REQ_PICK_MANUAL_UPLOAD && resultCode == Activity.RESULT_OK && data != null) {
-            List<Uri> picked = new ArrayList<>();
-            if (data.getClipData() != null) {
-                ClipData clip = data.getClipData();
-                for (int i = 0; i < clip.getItemCount(); i++) picked.add(clip.getItemAt(i).getUri());
-            } else if (data.getData() != null) {
-                picked.add(data.getData());
-            }
-            if (!picked.isEmpty()) {
-                synchronized (PhotoBackupService.pendingManualUris) {
-                    PhotoBackupService.pendingManualUris.addAll(picked);
-                }
-                Toast.makeText(this, "开始上传 " + picked.size() + " 个文件", Toast.LENGTH_SHORT).show();
-                startBackupService(PhotoBackupService.ACTION_UPLOAD_URIS, manualUploadTargetFolder);
-            }
-        }
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (selectionMode) {
-            selectionMode = false;
-            selectedKeys.clear();
-            updateSelectionUi();
-            return;
-        }
-        if ("files".equals(currentTab) && alistWebView.canGoBack()) {
-            alistWebView.goBack();
-            return;
-        }
-        if ("photos".equals(currentTab) && !"all".equals(currentFilter)) {
-            setGalleryFilter("all");
-            return;
-        }
-        if (!"photos".equals(currentTab)) {
-            selectTab("photos");
-            return;
-        }
-        super.onBackPressed();
-    }
-
-    private LinearLayout createCardLayout() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(14), dp(12), dp(14), dp(12));
-        card.setBackground(makeRoundRect("#131B2E", "#1E293B", dp(12)));
-        return card;
-    }
-
-    private TextView createPillButton(String text, String bgHex, String borderHex) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextColor(Color.WHITE);
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
-        tv.setTypeface(null, Typeface.BOLD);
-        tv.setSingleLine(true);
-        tv.setGravity(Gravity.CENTER);
-        tv.setPadding(dp(11), dp(6), dp(11), dp(6));
-        tv.setBackground(makeRoundRect(bgHex, borderHex, dp(8)));
-        return tv;
-    }
-
-    private GradientDrawable makeRoundRect(String fillHex, String strokeHex, int radiusPx) {
+    private GradientDrawable makeRoundRect(int color, int radiusPx) {
         GradientDrawable gd = new GradientDrawable();
-        gd.setColor(Color.parseColor(fillHex));
+        gd.setColor(color);
         gd.setCornerRadius(radiusPx);
-        gd.setStroke(dp(1), Color.parseColor(strokeHex));
         return gd;
-    }
-
-    private LinearLayout.LayoutParams makeMarginLp(int rightMarginPx) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.rightMargin = rightMarginPx;
-        return lp;
-    }
-
-    private LinearLayout.LayoutParams makeBottomMarginLp(int bottomMarginPx) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = bottomMarginPx;
-        return lp;
     }
 
     private String formatDuration(long ms) {
@@ -2146,19 +1284,20 @@ public class MainActivity extends Activity {
         return String.format(Locale.US, "%02d:%02d", m, s);
     }
 
-    private String md5(String s) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] dig = md.digest(s.getBytes("UTF-8"));
-            StringBuilder sb = new StringBuilder();
-            for (byte b : dig) sb.append(String.format("%02x", b & 0xff));
-            return sb.toString();
-        } catch (Exception e) {
-            return String.valueOf(s.hashCode());
-        }
-    }
-
     private int dp(int v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+    }
+
+    @Override
+    public void onBackPressed() {
+        if ("drive".equals(currentTab) && alistWebView != null && alistWebView.canGoBack()) {
+            alistWebView.goBack();
+            return;
+        }
+        if (!"photos".equals(currentTab)) {
+            bottomNav.setSelectedItemId(R.id.nav_photos);
+            return;
+        }
+        super.onBackPressed();
     }
 }

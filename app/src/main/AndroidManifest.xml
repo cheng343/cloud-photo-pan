@@ -18,7 +18,7 @@
         android:label="云相册网盘"
         android:usesCleartextTraffic="true"
         android:hardwareAccelerated="true"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        android:theme="@style/Theme.CloudPhotoPan">
 
         <activity
             android:name=".MainActivity"
