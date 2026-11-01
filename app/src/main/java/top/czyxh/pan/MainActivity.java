@@ -1270,6 +1270,10 @@ public class MainActivity extends AppCompatActivity {
         syncContainer.addView(cardOpts);
     }
 
+    private GradientDrawable makeRoundRect(String colorHex, int radiusPx) {
+        return makeRoundRect(Color.parseColor(colorHex), radiusPx);
+    }
+
     private GradientDrawable makeRoundRect(int color, int radiusPx) {
         GradientDrawable gd = new GradientDrawable();
         gd.setColor(color);
