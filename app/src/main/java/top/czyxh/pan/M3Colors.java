@@ -11,6 +11,7 @@ import com.google.android.material.color.MaterialColors;
 public class M3Colors {
     public final int surface;
     public final int surfaceContainer;
+    public final int surfaceContainerLowest;
     public final int surfaceContainerLow;
     public final int surfaceContainerHigh;
     public final int surfaceContainerHighest;
@@ -28,6 +29,7 @@ public class M3Colors {
     public M3Colors(Context context) {
         this.surface = MaterialColors.getColor(context, com.google.android.material.R.attr.colorSurface, Color.parseColor("#111318"));
         this.surfaceContainer = MaterialColors.getColor(context, com.google.android.material.R.attr.colorSurfaceContainer, Color.parseColor("#1E2025"));
+        this.surfaceContainerLowest = MaterialColors.getColor(context, com.google.android.material.R.attr.colorSurfaceContainerLowest, Color.parseColor("#FFFFFF"));
         this.surfaceContainerLow = MaterialColors.getColor(context, com.google.android.material.R.attr.colorSurfaceContainerLow, Color.parseColor("#191C20"));
         this.surfaceContainerHigh = MaterialColors.getColor(context, com.google.android.material.R.attr.colorSurfaceContainerHigh, Color.parseColor("#282A2F"));
         this.surfaceContainerHighest = MaterialColors.getColor(context, com.google.android.material.R.attr.colorSurfaceContainerHighest, Color.parseColor("#33353A"));
