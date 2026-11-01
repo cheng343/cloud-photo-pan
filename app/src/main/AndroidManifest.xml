@@ -16,6 +16,8 @@
     <application
         android:name=".PanApp"
         android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="云相册网盘"
         android:usesCleartextTraffic="true"
         android:hardwareAccelerated="true"

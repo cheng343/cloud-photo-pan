@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+  <group
+      android:scaleX="3.3"
+      android:scaleY="3.3"
+      android:translateX="14.4"
+      android:translateY="14.4">
+    <!-- Top petal: Google Red -->
+    <path
+        android:fillColor="#EA4335"
+        android:pathData="M12,12 L12,4 C14.21,4 16,5.79 16,8 C16,10.21 14.21,12 12,12 Z"/>
+    <!-- Right petal: Google Yellow -->
+    <path
+        android:fillColor="#FBBC04"
+        android:pathData="M12,12 L20,12 C20,14.21 18.21,16 16,16 C13.79,16 12,14.21 12,12 Z"/>
+    <!-- Bottom petal: Google Green -->
+    <path
+        android:fillColor="#34A853"
+        android:pathData="M12,12 L12,20 C9.79,20 8,18.21 8,16 C8,13.79 9.79,12 12,12 Z"/>
+    <!-- Left petal: Google Blue -->
+    <path
+        android:fillColor="#4285F4"
+        android:pathData="M12,12 L4,12 C4,9.79 5.79,8 8,8 C10.21,8 12,9.79 12,12 Z"/>
+  </group>
+</vector>
