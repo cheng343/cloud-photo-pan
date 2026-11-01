@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark Mode M3 Standard Palette -->
+    <color name="m3_surface">#111318</color>
+    <color name="m3_surface_container_lowest">#0C0E13</color>
+    <color name="m3_surface_container_low">#191C20</color>
+    <color name="m3_surface_container">#1E2025</color>
+    <color name="m3_surface_container_high">#282A2F</color>
+    <color name="m3_surface_container_highest">#33353A</color>
+    <color name="m3_on_surface">#E2E2E9</color>
+    <color name="m3_on_surface_variant">#C4C6D0</color>
+    <color name="m3_outline">#8E9099</color>
+    <color name="m3_outline_variant">#44474F</color>
+    <color name="m3_primary">#A8C7FA</color>
+    <color name="m3_on_primary">#062E6F</color>
+    <color name="m3_primary_container">#0842A0</color>
+    <color name="m3_on_primary_container">#D3E3FD</color>
+    <color name="m3_secondary_container">#004D61</color>
+    <color name="m3_on_secondary_container">#C2E7FF</color>
+</resources>

@@ -366,15 +366,15 @@ public class PhotoViewerDialog {
     }
 
     /**
-     * Google Photos-style M3 BottomSheetDialog for EXIF & Cloud Metadata.
+     * Google Photos & M3 Expressive Dialog for EXIF & Cloud Metadata (Matching Screenshot 1).
      */
     private void showExifBottomSheet(MainActivity.GalleryItem item) {
         final M3Colors m3 = new M3Colors(activity);
         BottomSheetDialog bs = new BottomSheetDialog(activity);
         LinearLayout root = new LinearLayout(activity);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(m3.surfaceContainerLow); // M3 Monet Surface Container Low
-        root.setPadding(dp(20), dp(12), dp(20), dp(28));
+        root.setBackground(makeRoundRect(m3.surfaceContainerLow, dp(28))); // 28dp Extra-Large Rounded Corners
+        root.setPadding(dp(22), dp(14), dp(22), dp(28));
 
         // Drag handle
         View handle = new View(activity);
@@ -385,12 +385,18 @@ public class PhotoViewerDialog {
         root.addView(handle, hlp);
 
         TextView tvH = new TextView(activity);
-        tvH.setText("详细参数 (EXIF / 云存储)");
+        tvH.setText(item.name);
         tvH.setTextColor(m3.onSurface);
-        tvH.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17);
+        tvH.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18);
         tvH.setTypeface(null, Typeface.BOLD);
-        tvH.setPadding(0, 0, 0, dp(14));
         root.addView(tvH);
+
+        TextView tvSub = new TextView(activity);
+        tvSub.setText("参数详情 · Google Drive 云端已归档");
+        tvSub.setTextColor(m3.outline);
+        tvSub.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+        tvSub.setPadding(0, dp(4), 0, dp(14));
+        root.addView(tvSub);
 
         // Fetch EXIF
         String camera = "未知相机";
@@ -433,40 +439,100 @@ public class PhotoViewerDialog {
             } catch (Exception ignored) {}
         }
 
-        root.addView(makeInfoRow(m3, "文件名称", item.name));
+        // Nested 16dp rounded content container (Matching Screenshot 1 inner box!)
+        LinearLayout innerBox = new LinearLayout(activity);
+        innerBox.setOrientation(LinearLayout.VERTICAL);
+        innerBox.setBackground(makeRoundRect(m3.surfaceContainerLowest, dp(16)));
+        innerBox.setPadding(dp(16), dp(12), dp(16), dp(12));
+
+        innerBox.addView(makeInfoRow(m3, "存储类型", item.isLocalOnly() ? "仅本地相册" : "Google Drive 云端已归档"));
         if (item.dateTaken > 0) {
             String dateStr = new SimpleDateFormat("yyyy年M月d日 HH:mm:ss", Locale.getDefault()).format(new Date(item.dateTaken));
-            root.addView(makeInfoRow(m3, "拍摄时间", dateStr));
+            innerBox.addView(makeInfoRow(m3, "拍摄时间", dateStr));
         }
-        if (!camera.equals("未知相机")) root.addView(makeInfoRow(m3, "拍摄设备", camera));
-        if (!params.isEmpty()) root.addView(makeInfoRow(m3, "曝光参数", params));
-        if (!resolution.isEmpty()) root.addView(makeInfoRow(m3, "画面尺寸", resolution));
-        if (item.size > 0) root.addView(makeInfoRow(m3, "文件大小", formatSize(item.size)));
-        root.addView(makeInfoRow(m3, "存储类型", item.isLocalOnly() ? "仅保存在本机相册" : "已直传并归档至 Google Drive"));
-
+        if (!camera.equals("未知相机")) innerBox.addView(makeInfoRow(m3, "拍摄设备", camera));
+        if (!params.isEmpty()) innerBox.addView(makeInfoRow(m3, "曝光参数", params));
+        if (!resolution.isEmpty()) innerBox.addView(makeInfoRow(m3, "画面尺寸", resolution));
+        if (item.size > 0) innerBox.addView(makeInfoRow(m3, "文件大小", formatSize(item.size)));
         if (!TextUtils.isEmpty(item.cloudUrl)) {
-            TextView btnCopy = new TextView(activity);
-            btnCopy.setText("📋 复制云端直链");
-            btnCopy.setTextColor(m3.onPrimaryContainer);
-            btnCopy.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
-            btnCopy.setTypeface(null, Typeface.BOLD);
-            btnCopy.setPadding(dp(14), dp(10), dp(14), dp(10));
-            btnCopy.setBackground(makeRoundRect(m3.primaryContainer, dp(8)));
-            btnCopy.setGravity(Gravity.CENTER);
-            btnCopy.setOnClickListener(new View.OnClickListener() {
+            innerBox.addView(makeInfoRow(m3, "云端路径", item.cloudUrl));
+        }
+
+        root.addView(innerBox);
+
+        // Copy download link row
+        if (!TextUtils.isEmpty(item.cloudUrl)) {
+            LinearLayout copyRow = new LinearLayout(activity);
+            copyRow.setOrientation(LinearLayout.HORIZONTAL);
+            copyRow.setGravity(Gravity.CENTER_VERTICAL);
+            copyRow.setPadding(dp(4), dp(14), dp(4), dp(4));
+
+            ImageView ivCopy = new ImageView(activity);
+            ivCopy.setImageResource(R.drawable.ic_m3_share);
+            ivCopy.setColorFilter(m3.primary);
+            copyRow.addView(ivCopy, new LinearLayout.LayoutParams(dp(20), dp(20)));
+
+            TextView tvCopy = new TextView(activity);
+            tvCopy.setText(" 复制下载链接");
+            tvCopy.setTextColor(m3.primary);
+            tvCopy.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
+            tvCopy.setTypeface(null, Typeface.BOLD);
+            copyRow.addView(tvCopy);
+
+            copyRow.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
                     if (cm != null) {
                         cm.setPrimaryClip(ClipData.newPlainText("URL", item.cloudUrl));
-                        Toast.makeText(activity, "已复制云端链接", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(activity, "已复制下载链接", Toast.LENGTH_SHORT).show();
                     }
                 }
             });
-            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            clp.topMargin = dp(16);
-            root.addView(btnCopy, clp);
+            root.addView(copyRow);
         }
+
+        // Bottom Action Buttons Row (Matching Screenshot 1: "关闭" + "开始下载" Pill Button)
+        LinearLayout btnRow = new LinearLayout(activity);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        btnRow.setPadding(0, dp(18), 0, 0);
+
+        TextView btnClose = new TextView(activity);
+        btnClose.setText("关闭");
+        btnClose.setTextColor(m3.onSurfaceVariant);
+        btnClose.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
+        btnClose.setTypeface(null, Typeface.BOLD);
+        btnClose.setPadding(dp(18), dp(10), dp(18), dp(10));
+        btnClose.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                bs.dismiss();
+            }
+        });
+        btnRow.addView(btnClose);
+
+        // 24dp Full Capsule Pill Button filled with Monet primary (Exact match to Screenshot 1!)
+        TextView btnDownload = new TextView(activity);
+        btnDownload.setText("⬇ 开始下载");
+        btnDownload.setTextColor(m3.onPrimary);
+        btnDownload.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
+        btnDownload.setTypeface(null, Typeface.BOLD);
+        btnDownload.setBackground(makeRoundRect(m3.primary, dp(24)));
+        btnDownload.setPadding(dp(22), dp(11), dp(22), dp(11));
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dlp.leftMargin = dp(12);
+        btnDownload.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (callbacks != null) callbacks.onDownloadItem(item);
+                Toast.makeText(activity, "正在下载原图...", Toast.LENGTH_SHORT).show();
+                bs.dismiss();
+            }
+        });
+        btnRow.addView(btnDownload, dlp);
+
+        root.addView(btnRow);
 
         bs.setContentView(root);
         bs.show();

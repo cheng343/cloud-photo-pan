@@ -33,6 +33,7 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -47,8 +48,11 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.bumptech.glide.load.resource.bitmap.CenterCrop;
+import com.bumptech.glide.load.resource.bitmap.RoundedCorners;
 import com.google.android.material.bottomnavigation.BottomNavigationView;
 import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.materialswitch.MaterialSwitch;
 
 import org.json.JSONArray;
@@ -74,12 +78,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Flagship Google MD3 (Material You) Cloud Photo Gallery & Drive App.
- * Full wallpaper-adaptive Monet dynamic color theming, ViewPager2, PhotoView, Glide & BottomNavigationView.
+ * Flagship Google MD3 (Material You) Expressive Cloud Photo Gallery & Pan App.
+ * Matches authentic M3 rounded aesthetics (20dp/28dp radii, Monet wallpaper extraction, Headline typography, M3 FAB & NavigationBar).
  */
 public class MainActivity extends AppCompatActivity {
     private static final int REQ_PERMS = 2001;
     private static final int REQ_CHOOSE_FILE = 2002;
+    private static final int REQ_MANUAL_UPLOAD = 2003;
     private static final String BASE_API = "https://pan.czyxh.top";
 
     public static class GalleryItem {
@@ -137,10 +142,15 @@ public class MainActivity extends AppCompatActivity {
     private final List<AlbumCard> albumCards = new ArrayList<>();
 
     private M3Colors m3;
+    private FrameLayout rootFrame;
     private FrameLayout contentFrame;
     private BottomNavigationView bottomNav;
-    private View searchTopBar;
-    private TextView tvTopTitle;
+    private FloatingActionButton fabUpload;
+
+    // Header View
+    private View headerBar;
+    private TextView tvHeaderTitle;
+    private LinearLayout headerActionBox;
     private ImageView ivTopColToggle;
 
     // Tab Views
@@ -176,18 +186,21 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void buildM3Layout() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(m3.surface);
+        rootFrame = new FrameLayout(this);
+        rootFrame.setBackgroundColor(m3.surface);
 
-        // Top Search Bar (Google Photos MD3 SearchBar with Monet Dynamic Palette)
-        searchTopBar = buildM3TopBar();
-        root.addView(searchTopBar);
+        LinearLayout mainCol = new LinearLayout(this);
+        mainCol.setOrientation(LinearLayout.VERTICAL);
+        mainCol.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // M3 Large Headline Header Bar (matching "下载" / "账号" in mature apps)
+        headerBar = buildM3Header();
+        mainCol.addView(headerBar);
 
         // Content Area
         contentFrame = new FrameLayout(this);
         LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f);
-        root.addView(contentFrame, clp);
+        mainCol.addView(contentFrame, clp);
 
         // Initialize Tab Views
         setupPhotosView();
@@ -195,7 +208,7 @@ public class MainActivity extends AppCompatActivity {
         setupSyncView();
         setupAlistWebView();
 
-        // Bottom Navigation (Material 3 NavigationBar with native Monet Dynamic Pill & Theme)
+        // Bottom Navigation (Material 3 NavigationBar with horizontal Monet pill)
         bottomNav = new BottomNavigationView(this);
         bottomNav.inflateMenu(R.menu.bottom_nav_menu);
         bottomNav.setBackgroundColor(m3.surfaceContainer);
@@ -212,46 +225,69 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        root.addView(bottomNav, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(80)));
+        mainCol.addView(bottomNav, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(80)));
+        rootFrame.addView(mainCol);
 
-        setContentView(root);
+        // M3 Floating Action Button (16dp squircle pill, exactly like the + button in mature reference)
+        fabUpload = new FloatingActionButton(this);
+        fabUpload.setImageResource(R.drawable.ic_m3_cloud_upload);
+        fabUpload.setColorFilter(m3.onPrimaryContainer);
+        fabUpload.setBackgroundTintList(android.content.res.ColorStateList.valueOf(m3.primaryContainer));
+        fabUpload.setElevation(dp(4));
+        fabUpload.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                intent.setType("image/*,video/*");
+                intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                startActivityForResult(Intent.createChooser(intent, "选择照片/视频直传 Google Drive"), REQ_MANUAL_UPLOAD);
+            }
+        });
+
+        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(dp(56), dp(56));
+        flp.gravity = Gravity.BOTTOM | Gravity.RIGHT;
+        flp.rightMargin = dp(20);
+        flp.bottomMargin = dp(96);
+        rootFrame.addView(fabUpload, flp);
+
+        setContentView(rootFrame);
         switchTab("photos");
     }
 
-    private View buildM3TopBar() {
+    /**
+     * M3 Large Headline Header (Clean 28sp typography matching Google Photos & Material You standards).
+     */
+    private View buildM3Header() {
         LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), dp(36), dp(16), dp(10));
+        bar.setOrientation(LinearLayout.VERTICAL);
+        bar.setPadding(dp(22), dp(40), dp(22), dp(12));
         bar.setBackgroundColor(m3.surface);
 
-        // M3 Pill Container (Monet surfaceContainerHigh)
-        LinearLayout pill = new LinearLayout(this);
-        pill.setOrientation(LinearLayout.HORIZONTAL);
-        pill.setGravity(Gravity.CENTER_VERTICAL);
-        pill.setPadding(dp(16), dp(10), dp(16), dp(10));
-        pill.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(28)));
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
 
-        // Authentic Google Photos 4-color Pinwheel Logo
-        ImageView ivLogo = new ImageView(this);
-        ivLogo.setImageResource(R.drawable.ic_google_photos_logo);
-        pill.addView(ivLogo, new LinearLayout.LayoutParams(dp(26), dp(26)));
-
-        // Title
-        tvTopTitle = new TextView(this);
-        tvTopTitle.setText("Google Photos · 云相册");
-        tvTopTitle.setTextColor(m3.onSurface);
-        tvTopTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
-        tvTopTitle.setTypeface(null, Typeface.BOLD);
-        tvTopTitle.setPadding(dp(12), 0, dp(12), 0);
+        // Headline Title
+        tvHeaderTitle = new TextView(this);
+        tvHeaderTitle.setText("照片");
+        tvHeaderTitle.setTextColor(m3.onSurface);
+        tvHeaderTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 28);
+        tvHeaderTitle.setTypeface(null, Typeface.BOLD);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        pill.addView(tvTopTitle, tlp);
+        topRow.addView(tvHeaderTitle, tlp);
 
-        // Column Switcher (3 / 4 columns)
+        // Action Container
+        headerActionBox = new LinearLayout(this);
+        headerActionBox.setOrientation(LinearLayout.HORIZONTAL);
+        headerActionBox.setGravity(Gravity.CENTER_VERTICAL);
+
+        // Grid column toggle pill (3 <-> 4)
         ivTopColToggle = new ImageView(this);
         ivTopColToggle.setImageResource(R.drawable.ic_m3_grid);
         ivTopColToggle.setColorFilter(m3.onSurfaceVariant);
-        ivTopColToggle.setPadding(dp(4), dp(4), dp(4), dp(4));
+        ivTopColToggle.setPadding(dp(8), dp(8), dp(8), dp(8));
+        ivTopColToggle.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(14)));
         ivTopColToggle.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -262,25 +298,20 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(MainActivity.this, "已切换为 " + gridColumns + " 列视图", Toast.LENGTH_SHORT).show();
             }
         });
-        pill.addView(ivTopColToggle, new LinearLayout.LayoutParams(dp(32), dp(32)));
+        headerActionBox.addView(ivTopColToggle, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
-        // Sync Avatar Badge (Monet primaryContainer circle)
-        ImageView ivSyncBadge = new ImageView(this);
-        ivSyncBadge.setImageResource(R.drawable.ic_m3_sync);
-        ivSyncBadge.setColorFilter(m3.onPrimaryContainer);
-        ivSyncBadge.setPadding(dp(6), dp(6), dp(6), dp(6));
-        ivSyncBadge.setBackground(makeRoundRect(m3.primaryContainer, dp(16)));
-        ivSyncBadge.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                bottomNav.setSelectedItemId(R.id.nav_sync);
-            }
-        });
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(dp(32), dp(32));
-        slp.leftMargin = dp(8);
-        pill.addView(ivSyncBadge, slp);
+        // Google Photos Pinwheel Badge
+        ImageView ivLogo = new ImageView(this);
+        ivLogo.setImageResource(R.drawable.ic_google_photos_logo);
+        ivLogo.setPadding(dp(6), dp(6), dp(6), dp(6));
+        ivLogo.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(14)));
+        LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(dp(40), dp(40));
+        llp.leftMargin = dp(10);
+        headerActionBox.addView(ivLogo, llp);
 
-        bar.addView(pill, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        topRow.addView(headerActionBox);
+        bar.addView(topRow);
+
         return bar;
     }
 
@@ -331,7 +362,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         albumsRecyclerView = new RecyclerView(this);
-        albumsRecyclerView.setLayoutManager(new GridLayoutManager(this, 2));
+        albumsRecyclerView.setLayoutManager(new GridLayoutManager(this, 1)); // Clean list of modern 20dp cards
         albumsAdapter = new AlbumsAdapter();
         albumsRecyclerView.setAdapter(albumsAdapter);
 
@@ -345,7 +376,7 @@ public class MainActivity extends AppCompatActivity {
         syncScrollView.setBackgroundColor(m3.surface);
         syncContainer = new LinearLayout(this);
         syncContainer.setOrientation(LinearLayout.VERTICAL);
-        syncContainer.setPadding(dp(16), dp(16), dp(16), dp(32));
+        syncContainer.setPadding(dp(16), dp(8), dp(16), dp(40));
         syncScrollView.addView(syncContainer);
         syncScrollView.setVisibility(View.GONE);
         contentFrame.addView(syncScrollView);
@@ -396,16 +427,17 @@ public class MainActivity extends AppCompatActivity {
         alistWebView.setVisibility("drive".equals(tab) ? View.VISIBLE : View.GONE);
 
         ivTopColToggle.setVisibility("photos".equals(tab) ? View.VISIBLE : View.GONE);
+        fabUpload.setVisibility("drive".equals(tab) ? View.GONE : View.VISIBLE);
 
         if ("photos".equals(tab)) {
-            tvTopTitle.setText("Google Photos · 云相册");
+            tvHeaderTitle.setText("照片");
         } else if ("albums".equals(tab)) {
-            tvTopTitle.setText("精选相册与目录");
+            tvHeaderTitle.setText("相册与目录");
         } else if ("sync".equals(tab)) {
-            tvTopTitle.setText("备份与直传引擎");
+            tvHeaderTitle.setText("备份与传输");
             renderSyncDashboard();
         } else if ("drive".equals(tab)) {
-            tvTopTitle.setText("AList 全能网盘");
+            tvHeaderTitle.setText("云端网盘");
             if (!alistLoaded) {
                 alistLoaded = true;
                 alistWebView.loadUrl(BASE_API + "/GoogleDrive");
@@ -439,6 +471,49 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_CHOOSE_FILE && uploadMessageCallback != null) {
+            Uri[] results = null;
+            if (resultCode == RESULT_OK && data != null) {
+                if (data.getClipData() != null) {
+                    int count = data.getClipData().getItemCount();
+                    results = new Uri[count];
+                    for (int i = 0; i < count; i++) {
+                        results[i] = data.getClipData().getItemAt(i).getUri();
+                    }
+                } else if (data.getData() != null) {
+                    results = new Uri[]{data.getData()};
+                }
+            }
+            uploadMessageCallback.onReceiveValue(results);
+            uploadMessageCallback = null;
+        } else if (requestCode == REQ_MANUAL_UPLOAD && resultCode == RESULT_OK && data != null) {
+            List<Uri> uris = new ArrayList<>();
+            if (data.getClipData() != null) {
+                int count = data.getClipData().getItemCount();
+                for (int i = 0; i < count; i++) {
+                    uris.add(data.getClipData().getItemAt(i).getUri());
+                }
+            } else if (data.getData() != null) {
+                uris.add(data.getData());
+            }
+
+            if (!uris.isEmpty()) {
+                synchronized (PhotoBackupService.pendingManualUris) {
+                    PhotoBackupService.pendingManualUris.addAll(uris);
+                }
+                Intent intent = new Intent(this, PhotoBackupService.class);
+                intent.setAction(PhotoBackupService.ACTION_UPLOAD_URIS);
+                intent.putExtra(PhotoBackupService.EXTRA_TARGET_FOLDER, BackupState.get(this).getTargetFolder());
+                startService(intent);
+                Toast.makeText(this, "已添加 " + uris.size() + " 个文件至直传队列", Toast.LENGTH_SHORT).show();
+                bottomNav.setSelectedItemId(R.id.nav_sync);
+            }
+        }
+    }
+
     private void loadAllMediaData() {
         photosRefreshLayout.setRefreshing(true);
         albumsRefreshLayout.setRefreshing(true);
@@ -449,7 +524,6 @@ public class MainActivity extends AppCompatActivity {
                 final List<GalleryItem> local = scanLocalMedia();
                 final List<GalleryItem> cloud = fetchCloudMedia();
 
-                // Merge & deduplicate
                 final Map<String, GalleryItem> map = new LinkedHashMap<>();
                 for (GalleryItem item : local) {
                     map.put(item.getUniqueKey(), item);
@@ -740,7 +814,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Timeline RecyclerView Adapter (Google Photos Material You Grid).
+     * Timeline Adapter with 4dp micro-rounded corners and Monet spacing.
      */
     private class TimelineAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
@@ -755,11 +829,11 @@ public class MainActivity extends AppCompatActivity {
             if (viewType == TimelineEntry.TYPE_HEADER) {
                 LinearLayout header = new LinearLayout(parent.getContext());
                 header.setOrientation(LinearLayout.VERTICAL);
-                header.setPadding(dp(16), dp(22), dp(16), dp(8));
+                header.setPadding(dp(18), dp(24), dp(18), dp(8));
 
                 TextView tvTitle = new TextView(parent.getContext());
                 tvTitle.setTextColor(m3.onSurface);
-                tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17);
+                tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18);
                 tvTitle.setTypeface(null, Typeface.BOLD);
 
                 TextView tvSub = new TextView(parent.getContext());
@@ -771,7 +845,7 @@ public class MainActivity extends AppCompatActivity {
                 return new HeaderViewHolder(header, tvTitle, tvSub);
             } else {
                 FrameLayout cell = new FrameLayout(parent.getContext());
-                int m = dp(1);
+                int m = dp(2);
                 ViewGroup.MarginLayoutParams mlp = new ViewGroup.MarginLayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0);
                 mlp.setMargins(m, m, m, m);
                 cell.setLayoutParams(mlp);
@@ -787,7 +861,7 @@ public class MainActivity extends AppCompatActivity {
                 ivCloud.setBackground(makeRoundRect(Color.parseColor("#99000000"), dp(10)));
                 ivCloud.setPadding(dp(3), dp(3), dp(3), dp(3));
                 FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.BOTTOM | Gravity.RIGHT);
-                clp.setMargins(0, 0, dp(4), dp(4));
+                clp.setMargins(0, 0, dp(6), dp(6));
                 cell.addView(ivCloud, clp);
 
                 // Video duration badge
@@ -798,7 +872,7 @@ public class MainActivity extends AppCompatActivity {
                 tvDur.setBackground(makeRoundRect(Color.parseColor("#99000000"), dp(8)));
                 tvDur.setPadding(dp(6), dp(2), dp(6), dp(2));
                 FrameLayout.LayoutParams vlp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.LEFT);
-                vlp.setMargins(dp(4), 0, 0, dp(4));
+                vlp.setMargins(dp(6), 0, 0, dp(6));
                 cell.addView(tvDur, vlp);
 
                 return new PhotoViewHolder(cell, iv, ivCloud, tvDur);
@@ -824,9 +898,10 @@ public class MainActivity extends AppCompatActivity {
                 ph.itemView.setLayoutParams(lp);
 
                 Object model = item.uri != null ? item.uri : item.cloudUrl;
+                // Soft 8dp rounded corner transform for modern MD3 look
                 Glide.with(MainActivity.this)
                         .load(model)
-                        .centerCrop()
+                        .transform(new CenterCrop(), new RoundedCorners(dp(6)))
                         .diskCacheStrategy(DiskCacheStrategy.ALL)
                         .into(ph.ivThumb);
 
@@ -878,7 +953,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Albums Grid Adapter (Google Photos Library Style M3 Cards with Monet Palette).
+     * Albums Adapter: Generous 20dp Extra-Large Rounded Cards with 16dp Squircle Thumbnails (Matching Screenshot 2!).
      */
     private class AlbumsAdapter extends RecyclerView.Adapter<AlbumsAdapter.AlbumViewHolder> {
 
@@ -886,53 +961,59 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public AlbumViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
             MaterialCardView card = new MaterialCardView(parent.getContext());
-            card.setRadius(dp(16));
-            card.setCardElevation(dp(2));
+            card.setRadius(dp(22)); // 22dp Extra-Large Rounded Corners
+            card.setCardElevation(dp(1));
             card.setCardBackgroundColor(m3.surfaceContainer);
             card.setStrokeColor(m3.outlineVariant);
             card.setStrokeWidth(dp(1));
 
-            int m = dp(8);
+            int mH = dp(16);
+            int mV = dp(8);
             ViewGroup.MarginLayoutParams mlp = new ViewGroup.MarginLayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            mlp.setMargins(m, m, m, m);
+            mlp.setMargins(mH, mV, mH, mV);
             card.setLayoutParams(mlp);
 
-            LinearLayout root = new LinearLayout(parent.getContext());
-            root.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout row = new LinearLayout(parent.getContext());
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(16), dp(16), dp(16), dp(16));
 
-            // Cover Image
+            // 52dp x 52dp Squircle Cover Container with 16dp radius
+            FrameLayout iconBox = new FrameLayout(parent.getContext());
+            iconBox.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(16)));
             ImageView ivCover = new ImageView(parent.getContext());
             ivCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            root.addView(ivCover, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(130)));
+            iconBox.addView(ivCover, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            row.addView(iconBox, new LinearLayout.LayoutParams(dp(52), dp(52)));
 
-            // Text info container
+            // Text Info
             LinearLayout info = new LinearLayout(parent.getContext());
             info.setOrientation(LinearLayout.VERTICAL);
-            info.setPadding(dp(12), dp(10), dp(12), dp(12));
+            info.setPadding(dp(16), 0, dp(12), 0);
 
             TextView tvTitle = new TextView(parent.getContext());
             tvTitle.setTextColor(m3.onSurface);
-            tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
+            tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
             tvTitle.setTypeface(null, Typeface.BOLD);
             tvTitle.setSingleLine(true);
             tvTitle.setEllipsize(TextUtils.TruncateAt.END);
 
             TextView tvCount = new TextView(parent.getContext());
             tvCount.setTextColor(m3.outline);
-            tvCount.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
+            tvCount.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+            tvCount.setPadding(0, dp(4), 0, 0);
 
             info.addView(tvTitle);
             info.addView(tvCount);
 
-            // Auto-backup Material Switch
-            MaterialSwitch swBackup = new MaterialSwitch(parent.getContext());
-            swBackup.setText("自动备份");
-            swBackup.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-            swBackup.setTextColor(m3.onSurfaceVariant);
-            info.addView(swBackup);
+            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+            row.addView(info, ilp);
 
-            root.addView(info);
-            card.addView(root);
+            // Auto-backup Switch with Monet accent
+            MaterialSwitch swBackup = new MaterialSwitch(parent.getContext());
+            row.addView(swBackup);
+
+            card.addView(row);
             return new AlbumViewHolder(card, ivCover, tvTitle, tvCount, swBackup);
         }
 
@@ -946,7 +1027,7 @@ public class MainActivity extends AppCompatActivity {
             if (model != null) {
                 Glide.with(MainActivity.this)
                         .load(model)
-                        .centerCrop()
+                        .transform(new CenterCrop(), new RoundedCorners(dp(14)))
                         .diskCacheStrategy(DiskCacheStrategy.ALL)
                         .into(holder.ivCover);
             } else {
@@ -1132,90 +1213,160 @@ public class MainActivity extends AppCompatActivity {
         return ok;
     }
 
+    /**
+     * Backup, Transfer & Download Dashboard:
+     * Modeled with 100% precision on the user's reference screenshot (Screenshot 2).
+     */
     private void renderSyncDashboard() {
         syncContainer.removeAllViews();
-
         final BackupState state = BackupState.get(this);
 
-        // M3 Elevated Card for Cloud Engine Status
-        MaterialCardView cardStatus = new MaterialCardView(this);
-        cardStatus.setRadius(dp(20));
-        cardStatus.setCardBackgroundColor(m3.surfaceContainer);
-        cardStatus.setStrokeColor(m3.outlineVariant);
-        cardStatus.setStrokeWidth(dp(1));
-        cardStatus.setCardElevation(dp(2));
+        // Sub Actions Row (matching "全部暂停  全部开始  删除全部")
+        LinearLayout subActions = new LinearLayout(this);
+        subActions.setOrientation(LinearLayout.HORIZONTAL);
+        subActions.setGravity(Gravity.CENTER_VERTICAL);
+        subActions.setPadding(dp(6), 0, dp(6), dp(16));
 
-        LinearLayout statusBox = new LinearLayout(this);
-        statusBox.setOrientation(LinearLayout.VERTICAL);
-        statusBox.setPadding(dp(18), dp(16), dp(18), dp(16));
-
-        TextView tvState = new TextView(this);
-        tvState.setText(state.isRunning ? "⚡ 正在直传直备中..." : "☁️ 云端归档引擎就绪");
-        tvState.setTextColor(m3.primary);
-        tvState.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
-        tvState.setTypeface(null, Typeface.BOLD);
-
-        TextView tvDesc = new TextView(this);
-        tvDesc.setText("手机直传 Cloudflare R2，通过 Worker 自动秒级归档到 Google Drive，零 VPN 极速访问，0 字节腾讯云服务器磁盘占用。");
-        tvDesc.setTextColor(m3.outline);
-        tvDesc.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
-        tvDesc.setPadding(0, dp(6), 0, dp(12));
-
-        statusBox.addView(tvState);
-        statusBox.addView(tvDesc);
-
-        // Action Buttons
-        LinearLayout btnRow = new LinearLayout(this);
-        btnRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        TextView btnScan = new TextView(this);
-        btnScan.setText("🚀 立即扫描并备份");
-        btnScan.setTextColor(m3.onPrimary);
-        btnScan.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
-        btnScan.setTypeface(null, Typeface.BOLD);
-        btnScan.setBackground(makeRoundRect(m3.primary, dp(12)));
-        btnScan.setPadding(dp(16), dp(10), dp(16), dp(10));
-        btnScan.setOnClickListener(new View.OnClickListener() {
+        TextView btnResume = new TextView(this);
+        btnResume.setText("▶ 全部开始");
+        btnResume.setTextColor(m3.primary);
+        btnResume.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
+        btnResume.setTypeface(null, Typeface.BOLD);
+        btnResume.setPadding(dp(12), dp(6), dp(12), dp(6));
+        btnResume.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(14)));
+        btnResume.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 Intent it = new Intent(MainActivity.this, PhotoBackupService.class);
                 it.setAction(PhotoBackupService.ACTION_SCAN_AND_BACKUP);
                 startService(it);
-                Toast.makeText(MainActivity.this, "已触发后台相册扫描备份", Toast.LENGTH_SHORT).show();
+                Toast.makeText(MainActivity.this, "已开始扫描并传输未备份照片", Toast.LENGTH_SHORT).show();
                 renderSyncDashboard();
             }
         });
 
-        TextView btnStop = new TextView(this);
-        btnStop.setText("⏹️ 停止");
-        btnStop.setTextColor(Color.parseColor("#F2B8B5"));
-        btnStop.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
-        btnStop.setTypeface(null, Typeface.BOLD);
-        btnStop.setBackground(makeRoundRect(Color.parseColor("#601410"), dp(12)));
-        btnStop.setPadding(dp(16), dp(10), dp(16), dp(10));
-        LinearLayout.LayoutParams stlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        stlp.leftMargin = dp(12);
-        btnStop.setOnClickListener(new View.OnClickListener() {
+        TextView btnPause = new TextView(this);
+        btnPause.setText("⏸ 全部暂停");
+        btnPause.setTextColor(m3.onSurfaceVariant);
+        btnPause.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
+        btnPause.setTypeface(null, Typeface.BOLD);
+        btnPause.setPadding(dp(12), dp(6), dp(12), dp(6));
+        btnPause.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(14)));
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        plp.leftMargin = dp(8);
+        btnPause.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 Intent it = new Intent(MainActivity.this, PhotoBackupService.class);
                 it.setAction(PhotoBackupService.ACTION_STOP_BACKUP);
                 startService(it);
-                Toast.makeText(MainActivity.this, "已请求停止传输", Toast.LENGTH_SHORT).show();
+                Toast.makeText(MainActivity.this, "已停止当前传输", Toast.LENGTH_SHORT).show();
                 renderSyncDashboard();
             }
         });
 
-        btnRow.addView(btnScan);
-        btnRow.addView(btnStop, stlp);
-        statusBox.addView(btnRow);
+        subActions.addView(btnResume);
+        subActions.addView(btnPause, plp);
+        syncContainer.addView(subActions);
 
-        cardStatus.addView(statusBox);
-        syncContainer.addView(cardStatus);
+        // Active Task Card (22dp extra-large rounded card, exact match to Screenshot 2!)
+        MaterialCardView cardTask = new MaterialCardView(this);
+        cardTask.setRadius(dp(22));
+        cardTask.setCardBackgroundColor(m3.surfaceContainer);
+        cardTask.setStrokeColor(m3.outlineVariant);
+        cardTask.setStrokeWidth(dp(1));
+        cardTask.setCardElevation(dp(1));
 
-        // Config Switches
+        LinearLayout taskBox = new LinearLayout(this);
+        taskBox.setOrientation(LinearLayout.VERTICAL);
+        taskBox.setPadding(dp(18), dp(18), dp(18), dp(16));
+
+        // Top Row: Squircle File Icon + Title + Status
+        LinearLayout itemRow = new LinearLayout(this);
+        itemRow.setOrientation(LinearLayout.HORIZONTAL);
+        itemRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        FrameLayout iconFrame = new FrameLayout(this);
+        iconFrame.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(14)));
+        ImageView ivDoc = new ImageView(this);
+        ivDoc.setImageResource(R.drawable.ic_m3_photos);
+        ivDoc.setColorFilter(m3.primary);
+        ivDoc.setPadding(dp(10), dp(10), dp(10), dp(10));
+        iconFrame.addView(ivDoc, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        itemRow.addView(iconFrame, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        LinearLayout titleBox = new LinearLayout(this);
+        titleBox.setOrientation(LinearLayout.VERTICAL);
+        titleBox.setPadding(dp(14), 0, dp(10), 0);
+
+        TextView tvFileName = new TextView(this);
+        tvFileName.setText(!TextUtils.isEmpty(state.currentFile) ? state.currentFile : "Google Drive 云相册归档引擎");
+        tvFileName.setTextColor(m3.onSurface);
+        tvFileName.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
+        tvFileName.setTypeface(null, Typeface.BOLD);
+        tvFileName.setSingleLine(true);
+        tvFileName.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+
+        TextView tvStatus = new TextView(this);
+        tvStatus.setText(state.isRunning ? "正在直传 R2 -> 自动归档 Google Drive" : "待命中 · 所有照片均已安全同步");
+        tvStatus.setTextColor(m3.outline);
+        tvStatus.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+        tvStatus.setPadding(0, dp(4), 0, 0);
+
+        titleBox.addView(tvFileName);
+        titleBox.addView(tvStatus);
+        itemRow.addView(titleBox, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+
+        taskBox.addView(itemRow);
+
+        // Progress Bar
+        ProgressBar pb = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        pb.setIndeterminate(state.isRunning && state.currentProgress <= 0);
+        pb.setProgress(state.currentProgress);
+        pb.setMax(100);
+        LinearLayout.LayoutParams pblp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(6));
+        pblp.topMargin = dp(16);
+        pblp.bottomMargin = dp(12);
+        taskBox.addView(pb, pblp);
+
+        // Bottom Stats Row (matching Screenshot 2: "已下载 11.9 MB / 45.4 MB · 26%    🗑 删除")
+        LinearLayout statsRow = new LinearLayout(this);
+        statsRow.setOrientation(LinearLayout.HORIZONTAL);
+        statsRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tvStats = new TextView(this);
+        tvStats.setText(state.isRunning
+                ? "已直传 " + state.sessionUploadedCount + "/" + state.sessionTotalCount + " 项 · 速度约 " + formatSpeed(state.currentSpeedBps)
+                : "直传目标: " + state.getTargetFolder() + " · 0 字节服务器占用");
+        tvStats.setTextColor(m3.outline);
+        tvStats.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+        statsRow.addView(tvStats, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+
+        TextView tvDelete = new TextView(this);
+        tvDelete.setText("⏹ 停止");
+        tvDelete.setTextColor(Color.parseColor("#BA1A1A"));
+        tvDelete.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+        tvDelete.setTypeface(null, Typeface.BOLD);
+        tvDelete.setPadding(dp(8), dp(4), dp(8), dp(4));
+        tvDelete.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent it = new Intent(MainActivity.this, PhotoBackupService.class);
+                it.setAction(PhotoBackupService.ACTION_STOP_BACKUP);
+                startService(it);
+                Toast.makeText(MainActivity.this, "已停止当前传输", Toast.LENGTH_SHORT).show();
+                renderSyncDashboard();
+            }
+        });
+        statsRow.addView(tvDelete);
+
+        taskBox.addView(statsRow);
+        cardTask.addView(taskBox);
+        syncContainer.addView(cardTask);
+
+        // Settings Card (22dp rounded corners)
         MaterialCardView cardOpts = new MaterialCardView(this);
-        cardOpts.setRadius(dp(20));
+        cardOpts.setRadius(dp(22));
         cardOpts.setCardBackgroundColor(m3.surfaceContainer);
         cardOpts.setStrokeColor(m3.outlineVariant);
         cardOpts.setStrokeWidth(dp(1));
@@ -1226,6 +1377,14 @@ public class MainActivity extends AppCompatActivity {
         LinearLayout optsBox = new LinearLayout(this);
         optsBox.setOrientation(LinearLayout.VERTICAL);
         optsBox.setPadding(dp(18), dp(14), dp(18), dp(14));
+
+        TextView tvOptTitle = new TextView(this);
+        tvOptTitle.setText("同步选项配置");
+        tvOptTitle.setTextColor(m3.onSurface);
+        tvOptTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
+        tvOptTitle.setTypeface(null, Typeface.BOLD);
+        tvOptTitle.setPadding(0, 0, 0, dp(10));
+        optsBox.addView(tvOptTitle);
 
         MaterialSwitch swWifi = new MaterialSwitch(this);
         swWifi.setText("仅在 Wi-Fi 网络下自动备份");
@@ -1247,6 +1406,12 @@ public class MainActivity extends AppCompatActivity {
         optsBox.addView(swVid);
         cardOpts.addView(optsBox);
         syncContainer.addView(cardOpts);
+    }
+
+    private String formatSpeed(long bps) {
+        if (bps <= 0) return "计算中...";
+        if (bps < 1024 * 1024) return String.format(Locale.US, "%.1f KB/s", bps / 1024.0);
+        return String.format(Locale.US, "%.1f MB/s", bps / (1024.0 * 1024.0));
     }
 
     private GradientDrawable makeRoundRect(String colorHex, int radiusPx) {
