@@ -68,13 +68,17 @@ public class BackupState {
         return new HashSet<>(prefs.getStringSet("selected_buckets", def));
     }
 
+    public void setAutoBackupEnabled(boolean enabled) {
+        prefs.edit().putBoolean("auto_backup_enabled", enabled).apply();
+    }
+
     public void saveConfig(boolean autoEnabled, boolean wifiOnly, boolean includeVideos, String targetFolder, Set<String> buckets) {
         prefs.edit()
                 .putBoolean("auto_backup_enabled", autoEnabled)
                 .putBoolean("wifi_only", wifiOnly)
                 .putBoolean("include_videos", includeVideos)
                 .putString("target_folder", (targetFolder == null || targetFolder.trim().isEmpty()) ? "/GoogleDrive/photos" : targetFolder.trim())
-                .putStringSet("selected_buckets", buckets)
+                .putStringSet("selected_buckets", new HashSet<>(buckets))
                 .apply();
     }
 

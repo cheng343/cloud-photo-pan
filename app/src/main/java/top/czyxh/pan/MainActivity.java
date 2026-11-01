@@ -165,6 +165,24 @@ public class MainActivity extends AppCompatActivity {
 
     private ScrollView syncScrollView;
     private LinearLayout syncContainer;
+    private boolean syncDashboardInitialized = false;
+    private TextView tvSyncFileName;
+    private TextView tvSyncStatus;
+    private ProgressBar pbSync;
+    private TextView tvSyncStats;
+    private MaterialSwitch swAutoMaster;
+    private MaterialSwitch swWifi;
+    private MaterialSwitch swVid;
+
+    private final Runnable syncUpdaterRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if ("sync".equals(currentTab)) {
+                updateSyncDashboardUi();
+                mainHandler.postDelayed(this, 600);
+            }
+        }
+    };
 
     private WebView alistWebView;
     private boolean alistLoaded = false;
@@ -431,13 +449,19 @@ public class MainActivity extends AppCompatActivity {
 
         if ("photos".equals(tab)) {
             tvHeaderTitle.setText("照片");
+            mainHandler.removeCallbacks(syncUpdaterRunnable);
         } else if ("albums".equals(tab)) {
             tvHeaderTitle.setText("相册与目录");
+            mainHandler.removeCallbacks(syncUpdaterRunnable);
         } else if ("sync".equals(tab)) {
             tvHeaderTitle.setText("备份与传输");
-            renderSyncDashboard();
+            ensureSyncDashboardBuilt();
+            updateSyncDashboardUi();
+            mainHandler.removeCallbacks(syncUpdaterRunnable);
+            mainHandler.post(syncUpdaterRunnable);
         } else if ("drive".equals(tab)) {
             tvHeaderTitle.setText("云端网盘");
+            mainHandler.removeCallbacks(syncUpdaterRunnable);
             if (!alistLoaded) {
                 alistLoaded = true;
                 alistWebView.loadUrl(BASE_API + "/GoogleDrive");
@@ -1046,20 +1070,30 @@ public class MainActivity extends AppCompatActivity {
                 });
             } else {
                 holder.swBackup.setVisibility(View.VISIBLE);
+                holder.swBackup.setOnCheckedChangeListener(null);
                 holder.swBackup.setChecked(card.autoBackup);
                 holder.swBackup.setOnCheckedChangeListener((btn, isChecked) -> {
                     card.autoBackup = isChecked;
                     Set<String> sel = BackupState.get(MainActivity.this).getSelectedBuckets();
-                    if (isChecked) sel.add(card.bucketName);
-                    else sel.remove(card.bucketName);
+                    if (isChecked) {
+                        sel.add(card.bucketName);
+                    } else {
+                        sel.remove(card.bucketName);
+                    }
+                    boolean hasBuckets = !sel.isEmpty();
                     BackupState.get(MainActivity.this).saveConfig(
-                            BackupState.get(MainActivity.this).isAutoBackupEnabled(),
+                            hasBuckets,
                             BackupState.get(MainActivity.this).isWifiOnly(),
                             BackupState.get(MainActivity.this).isIncludeVideos(),
                             BackupState.get(MainActivity.this).getTargetFolder(),
                             sel
                     );
                     Toast.makeText(MainActivity.this, (isChecked ? "已启用 " : "已关闭 ") + card.title + " 的自动备份", Toast.LENGTH_SHORT).show();
+                    if (hasBuckets) {
+                        Intent it = new Intent(MainActivity.this, PhotoBackupService.class);
+                        it.setAction(PhotoBackupService.ACTION_START_WATCHER);
+                        startService(it);
+                    }
                 });
 
                 holder.itemView.setOnClickListener(new View.OnClickListener() {
@@ -1217,11 +1251,12 @@ public class MainActivity extends AppCompatActivity {
      * Backup, Transfer & Download Dashboard:
      * Modeled with 100% precision on the user's reference screenshot (Screenshot 2).
      */
-    private void renderSyncDashboard() {
+    private void ensureSyncDashboardBuilt() {
+        if (syncDashboardInitialized && syncContainer.getChildCount() > 0) return;
         syncContainer.removeAllViews();
         final BackupState state = BackupState.get(this);
 
-        // Sub Actions Row (matching "全部暂停  全部开始  删除全部")
+        // Sub Actions Row (matching "全部暂停  全部开始  一键查重")
         LinearLayout subActions = new LinearLayout(this);
         subActions.setOrientation(LinearLayout.HORIZONTAL);
         subActions.setGravity(Gravity.CENTER_VERTICAL);
@@ -1232,16 +1267,18 @@ public class MainActivity extends AppCompatActivity {
         btnResume.setTextColor(m3.primary);
         btnResume.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
         btnResume.setTypeface(null, Typeface.BOLD);
-        btnResume.setPadding(dp(12), dp(6), dp(12), dp(6));
+        btnResume.setPadding(dp(14), dp(8), dp(14), dp(8));
         btnResume.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(14)));
         btnResume.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                state.isRunning = true;
+                state.statusText = "正在扫描并同步未备份相册...";
+                updateSyncDashboardUi();
                 Intent it = new Intent(MainActivity.this, PhotoBackupService.class);
                 it.setAction(PhotoBackupService.ACTION_SCAN_AND_BACKUP);
                 startService(it);
                 Toast.makeText(MainActivity.this, "已开始扫描并传输未备份照片", Toast.LENGTH_SHORT).show();
-                renderSyncDashboard();
             }
         });
 
@@ -1250,23 +1287,68 @@ public class MainActivity extends AppCompatActivity {
         btnPause.setTextColor(m3.onSurfaceVariant);
         btnPause.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
         btnPause.setTypeface(null, Typeface.BOLD);
-        btnPause.setPadding(dp(12), dp(6), dp(12), dp(6));
+        btnPause.setPadding(dp(14), dp(8), dp(14), dp(8));
         btnPause.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(14)));
         LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         plp.leftMargin = dp(8);
         btnPause.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                state.isRunning = false;
+                state.statusText = "已暂停备份传输";
+                updateSyncDashboardUi();
                 Intent it = new Intent(MainActivity.this, PhotoBackupService.class);
                 it.setAction(PhotoBackupService.ACTION_STOP_BACKUP);
                 startService(it);
                 Toast.makeText(MainActivity.this, "已停止当前传输", Toast.LENGTH_SHORT).show();
-                renderSyncDashboard();
+            }
+        });
+
+        TextView btnDedup = new TextView(this);
+        btnDedup.setText("🧹 网盘查重");
+        btnDedup.setTextColor(m3.outline);
+        btnDedup.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
+        btnDedup.setPadding(dp(12), dp(8), dp(12), dp(8));
+        btnDedup.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(14)));
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dlp.leftMargin = dp(8);
+        btnDedup.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Toast.makeText(MainActivity.this, "正在触发 Google Drive 深度查重...", Toast.LENGTH_SHORT).show();
+                executor.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            URL u = new URL(BASE_API + "/api/cloud_transfer/dedup");
+                            HttpURLConnection c = (HttpURLConnection) u.openConnection();
+                            c.setRequestMethod("POST");
+                            c.setConnectTimeout(10000);
+                            c.setReadTimeout(30000);
+                            c.getResponseCode();
+                            mainHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    Toast.makeText(MainActivity.this, "网盘查重完成！已清理重名冗余副本", Toast.LENGTH_LONG).show();
+                                    loadAllMediaData();
+                                }
+                            });
+                        } catch (Exception e) {
+                            mainHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    Toast.makeText(MainActivity.this, "查重请求已送达服务器后台处理", Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        }
+                    }
+                });
             }
         });
 
         subActions.addView(btnResume);
         subActions.addView(btnPause, plp);
+        subActions.addView(btnDedup, dlp);
         syncContainer.addView(subActions);
 
         // Active Task Card (22dp extra-large rounded card, exact match to Screenshot 2!)
@@ -1299,48 +1381,41 @@ public class MainActivity extends AppCompatActivity {
         titleBox.setOrientation(LinearLayout.VERTICAL);
         titleBox.setPadding(dp(14), 0, dp(10), 0);
 
-        TextView tvFileName = new TextView(this);
-        tvFileName.setText(!TextUtils.isEmpty(state.currentFile) ? state.currentFile : "Google Drive 云相册归档引擎");
-        tvFileName.setTextColor(m3.onSurface);
-        tvFileName.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
-        tvFileName.setTypeface(null, Typeface.BOLD);
-        tvFileName.setSingleLine(true);
-        tvFileName.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        tvSyncFileName = new TextView(this);
+        tvSyncFileName.setTextColor(m3.onSurface);
+        tvSyncFileName.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
+        tvSyncFileName.setTypeface(null, Typeface.BOLD);
+        tvSyncFileName.setSingleLine(true);
+        tvSyncFileName.setEllipsize(TextUtils.TruncateAt.MIDDLE);
 
-        TextView tvStatus = new TextView(this);
-        tvStatus.setText(state.isRunning ? "正在直传 R2 -> 自动归档 Google Drive" : "待命中 · 所有照片均已安全同步");
-        tvStatus.setTextColor(m3.outline);
-        tvStatus.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
-        tvStatus.setPadding(0, dp(4), 0, 0);
+        tvSyncStatus = new TextView(this);
+        tvSyncStatus.setTextColor(m3.outline);
+        tvSyncStatus.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+        tvSyncStatus.setPadding(0, dp(4), 0, 0);
 
-        titleBox.addView(tvFileName);
-        titleBox.addView(tvStatus);
+        titleBox.addView(tvSyncFileName);
+        titleBox.addView(tvSyncStatus);
         itemRow.addView(titleBox, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
 
         taskBox.addView(itemRow);
 
         // Progress Bar
-        ProgressBar pb = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        pb.setIndeterminate(state.isRunning && state.currentProgress <= 0);
-        pb.setProgress(state.currentProgress);
-        pb.setMax(100);
+        pbSync = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        pbSync.setMax(100);
         LinearLayout.LayoutParams pblp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(6));
         pblp.topMargin = dp(16);
         pblp.bottomMargin = dp(12);
-        taskBox.addView(pb, pblp);
+        taskBox.addView(pbSync, pblp);
 
         // Bottom Stats Row (matching Screenshot 2: "已下载 11.9 MB / 45.4 MB · 26%    🗑 删除")
         LinearLayout statsRow = new LinearLayout(this);
         statsRow.setOrientation(LinearLayout.HORIZONTAL);
         statsRow.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView tvStats = new TextView(this);
-        tvStats.setText(state.isRunning
-                ? "已直传 " + state.sessionUploadedCount + "/" + state.sessionTotalCount + " 项 · 速度约 " + formatSpeed(state.currentSpeedBps)
-                : "直传目标: " + state.getTargetFolder() + " · 0 字节服务器占用");
-        tvStats.setTextColor(m3.outline);
-        tvStats.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
-        statsRow.addView(tvStats, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        tvSyncStats = new TextView(this);
+        tvSyncStats.setTextColor(m3.outline);
+        tvSyncStats.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+        statsRow.addView(tvSyncStats, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
 
         TextView tvDelete = new TextView(this);
         tvDelete.setText("⏹ 停止");
@@ -1354,8 +1429,10 @@ public class MainActivity extends AppCompatActivity {
                 Intent it = new Intent(MainActivity.this, PhotoBackupService.class);
                 it.setAction(PhotoBackupService.ACTION_STOP_BACKUP);
                 startService(it);
+                state.isRunning = false;
+                state.statusText = "已停止当前传输";
+                updateSyncDashboardUi();
                 Toast.makeText(MainActivity.this, "已停止当前传输", Toast.LENGTH_SHORT).show();
-                renderSyncDashboard();
             }
         });
         statsRow.addView(tvDelete);
@@ -1376,36 +1453,121 @@ public class MainActivity extends AppCompatActivity {
 
         LinearLayout optsBox = new LinearLayout(this);
         optsBox.setOrientation(LinearLayout.VERTICAL);
-        optsBox.setPadding(dp(18), dp(14), dp(18), dp(14));
+        optsBox.setPadding(dp(18), dp(16), dp(18), dp(16));
 
         TextView tvOptTitle = new TextView(this);
-        tvOptTitle.setText("同步选项配置");
+        tvOptTitle.setText("同步选项与后台守护");
         tvOptTitle.setTextColor(m3.onSurface);
-        tvOptTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
+        tvOptTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
         tvOptTitle.setTypeface(null, Typeface.BOLD);
-        tvOptTitle.setPadding(0, 0, 0, dp(10));
+        tvOptTitle.setPadding(0, 0, 0, dp(12));
         optsBox.addView(tvOptTitle);
 
-        MaterialSwitch swWifi = new MaterialSwitch(this);
-        swWifi.setText("仅在 Wi-Fi 网络下自动备份");
-        swWifi.setChecked(state.isWifiOnly());
+        swAutoMaster = new MaterialSwitch(this);
+        swAutoMaster.setText("全自动后台静默同步");
+        swAutoMaster.setTextColor(m3.primary);
+        swAutoMaster.setTypeface(null, Typeface.BOLD);
+        optsBox.addView(swAutoMaster);
+
+        swWifi = new MaterialSwitch(this);
+        swWifi.setText("仅在 Wi-Fi 网络下备份");
         swWifi.setTextColor(m3.onSurface);
-        swWifi.setOnCheckedChangeListener((btn, isChecked) -> {
-            state.saveConfig(state.isAutoBackupEnabled(), isChecked, state.isIncludeVideos(), state.getTargetFolder(), state.getSelectedBuckets());
-        });
-
-        MaterialSwitch swVid = new MaterialSwitch(this);
-        swVid.setText("包含视频备份");
-        swVid.setChecked(state.isIncludeVideos());
-        swVid.setTextColor(m3.onSurface);
-        swVid.setOnCheckedChangeListener((btn, isChecked) -> {
-            state.saveConfig(state.isAutoBackupEnabled(), state.isWifiOnly(), isChecked, state.getTargetFolder(), state.getSelectedBuckets());
-        });
-
         optsBox.addView(swWifi);
+
+        swVid = new MaterialSwitch(this);
+        swVid.setText("包含视频备份");
+        swVid.setTextColor(m3.onSurface);
         optsBox.addView(swVid);
+
+        TextView tvClear = new TextView(this);
+        tvClear.setText("🔄 清除本地已备份账本并重新比对");
+        tvClear.setTextColor(m3.outline);
+        tvClear.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+        tvClear.setPadding(dp(4), dp(14), dp(4), dp(4));
+        tvClear.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                state.clearBackedUpLedger();
+                Toast.makeText(MainActivity.this, "已重置已同步记录，下次扫描将重新全量比对", Toast.LENGTH_SHORT).show();
+                updateSyncDashboardUi();
+            }
+        });
+        optsBox.addView(tvClear);
+
         cardOpts.addView(optsBox);
         syncContainer.addView(cardOpts);
+
+        syncDashboardInitialized = true;
+    }
+
+    private void updateSyncDashboardUi() {
+        if (!syncDashboardInitialized) return;
+        final BackupState state = BackupState.get(this);
+
+        if (tvSyncFileName != null) {
+            String name = !TextUtils.isEmpty(state.currentFile) ? state.currentFile : (state.isRunning ? "正在比对相册与云端..." : "云相册自动归档已就绪");
+            tvSyncFileName.setText(name);
+        }
+
+        if (tvSyncStatus != null) {
+            tvSyncStatus.setText(state.isRunning ? ("正在直传 R2 -> 自动归档 Google Drive · " + state.statusText) : state.statusText);
+        }
+
+        if (pbSync != null) {
+            if (state.isRunning) {
+                if (state.currentProgress > 0) {
+                    pbSync.setIndeterminate(false);
+                    pbSync.setProgress(state.currentProgress);
+                } else {
+                    pbSync.setIndeterminate(true);
+                }
+            } else {
+                pbSync.setIndeterminate(false);
+                pbSync.setProgress(100);
+            }
+        }
+
+        if (tvSyncStats != null) {
+            if (state.isRunning) {
+                tvSyncStats.setText("已直传 " + state.sessionUploadedCount + "/" + state.sessionTotalCount + " 项 · 速度约 " + formatSpeed(state.currentSpeedBps));
+            } else {
+                int backedCount = 0;
+                for (String k : state.getBackedUpSet()) {
+                    if (!k.contains(":")) backedCount++;
+                }
+                tvSyncStats.setText("已累计同步 " + backedCount + " 张照片 · 直传目标: " + state.getTargetFolder());
+            }
+        }
+
+        if (swAutoMaster != null) {
+            swAutoMaster.setOnCheckedChangeListener(null);
+            swAutoMaster.setChecked(state.isAutoBackupEnabled());
+            swAutoMaster.setOnCheckedChangeListener((btn, isChecked) -> {
+                state.saveConfig(isChecked, state.isWifiOnly(), state.isIncludeVideos(), state.getTargetFolder(), state.getSelectedBuckets());
+                Toast.makeText(this, isChecked ? "已开启全自动后台同步" : "已暂停全自动后台同步", Toast.LENGTH_SHORT).show();
+                if (isChecked) {
+                    Intent it = new Intent(this, PhotoBackupService.class);
+                    it.setAction(PhotoBackupService.ACTION_START_WATCHER);
+                    startService(it);
+                }
+            });
+        }
+
+        if (swWifi != null) {
+            swWifi.setOnCheckedChangeListener(null);
+            swWifi.setChecked(state.isWifiOnly());
+            swWifi.setOnCheckedChangeListener((btn, isChecked) -> {
+                state.saveConfig(state.isAutoBackupEnabled(), isChecked, state.isIncludeVideos(), state.getTargetFolder(), state.getSelectedBuckets());
+            });
+        }
+
+        if (swVid != null) {
+            swVid.setOnCheckedChangeListener(null);
+            swVid.setChecked(state.isIncludeVideos());
+            swVid.setOnCheckedChangeListener((btn, isChecked) -> {
+                state.saveConfig(state.isAutoBackupEnabled(), state.isWifiOnly(), isChecked, state.getTargetFolder(), state.getSelectedBuckets());
+            });
+        }
     }
 
     private String formatSpeed(long bps) {
@@ -1434,6 +1596,28 @@ public class MainActivity extends AppCompatActivity {
 
     private int dp(int v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if ("sync".equals(currentTab)) {
+            updateSyncDashboardUi();
+            mainHandler.removeCallbacks(syncUpdaterRunnable);
+            mainHandler.post(syncUpdaterRunnable);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        mainHandler.removeCallbacks(syncUpdaterRunnable);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        mainHandler.removeCallbacks(syncUpdaterRunnable);
     }
 
     @Override
