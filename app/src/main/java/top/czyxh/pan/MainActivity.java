@@ -7,7 +7,6 @@ import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.res.ColorStateList;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -25,9 +24,6 @@ import android.view.Gravity;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
-import android.webkit.CookieManager;
-import android.webkit.DownloadListener;
-import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -37,7 +33,6 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -60,20 +55,16 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -83,8 +74,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Flagship Google MD3 (Material Design 3) Cloud Photo Gallery & Drive App.
- * Built with Google Material Components, RecyclerView, Glide, and ViewPager2.
+ * Flagship Google MD3 (Material You) Cloud Photo Gallery & Drive App.
+ * Full wallpaper-adaptive Monet dynamic color theming, ViewPager2, PhotoView, Glide & BottomNavigationView.
  */
 public class MainActivity extends AppCompatActivity {
     private static final int REQ_PERMS = 2001;
@@ -145,6 +136,7 @@ public class MainActivity extends AppCompatActivity {
     private final List<TimelineEntry> timelineEntries = new ArrayList<>();
     private final List<AlbumCard> albumCards = new ArrayList<>();
 
+    private M3Colors m3;
     private FrameLayout contentFrame;
     private BottomNavigationView bottomNav;
     private View searchTopBar;
@@ -175,6 +167,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        m3 = new M3Colors(this);
         gridColumns = BackupState.get(this).getGridColumns();
         if (gridColumns < 3 || gridColumns > 4) gridColumns = 3;
 
@@ -185,9 +178,9 @@ public class MainActivity extends AppCompatActivity {
     private void buildM3Layout() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(ContextCompat.getColor(this, R.color.m3_surface));
+        root.setBackgroundColor(m3.surface);
 
-        // Top Search Bar (Google Photos MD3 SearchBar)
+        // Top Search Bar (Google Photos MD3 SearchBar with Monet Dynamic Palette)
         searchTopBar = buildM3TopBar();
         root.addView(searchTopBar);
 
@@ -202,21 +195,10 @@ public class MainActivity extends AppCompatActivity {
         setupSyncView();
         setupAlistWebView();
 
-        // Bottom Navigation (MD3 NavigationBar)
+        // Bottom Navigation (Material 3 NavigationBar with native Monet Dynamic Pill & Theme)
         bottomNav = new BottomNavigationView(this);
         bottomNav.inflateMenu(R.menu.bottom_nav_menu);
-        bottomNav.setBackgroundColor(ContextCompat.getColor(this, R.color.m3_surface_container));
-        bottomNav.setItemRippleColor(ColorStateList.valueOf(Color.parseColor("#33A8C7FA")));
-
-        // M3 Icon & Text Colors
-        int[][] states = new int[][]{
-                new int[]{android.R.attr.state_selected},
-                new int[]{-android.R.attr.state_selected}
-        };
-        int[] iconColors = new int[]{Color.parseColor("#C2E7FF"), Color.parseColor("#C4C6D0")};
-        int[] textColors = new int[]{Color.parseColor("#E2E2E9"), Color.parseColor("#C4C6D0")};
-        bottomNav.setItemIconTintList(new ColorStateList(states, iconColors));
-        bottomNav.setItemTextColor(new ColorStateList(states, textColors));
+        bottomNav.setBackgroundColor(m3.surfaceContainer);
 
         bottomNav.setOnItemSelectedListener(new BottomNavigationView.OnItemSelectedListener() {
             @Override
@@ -241,25 +223,24 @@ public class MainActivity extends AppCompatActivity {
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(16), dp(36), dp(16), dp(10));
-        bar.setBackgroundColor(ContextCompat.getColor(this, R.color.m3_surface));
+        bar.setBackgroundColor(m3.surface);
 
-        // M3 Pill Container
+        // M3 Pill Container (Monet surfaceContainerHigh)
         LinearLayout pill = new LinearLayout(this);
         pill.setOrientation(LinearLayout.HORIZONTAL);
         pill.setGravity(Gravity.CENTER_VERTICAL);
         pill.setPadding(dp(16), dp(10), dp(16), dp(10));
-        pill.setBackground(makeRoundRect(ContextCompat.getColor(this, R.color.m3_surface_container_high), dp(28)));
+        pill.setBackground(makeRoundRect(m3.surfaceContainerHigh, dp(28)));
 
-        // Google Photos Pinwheel / Cloud Icon
+        // Authentic Google Photos 4-color Pinwheel Logo
         ImageView ivLogo = new ImageView(this);
-        ivLogo.setImageResource(R.drawable.ic_m3_photos);
-        ivLogo.setColorFilter(Color.parseColor("#A8C7FA"));
-        pill.addView(ivLogo, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        ivLogo.setImageResource(R.drawable.ic_google_photos_logo);
+        pill.addView(ivLogo, new LinearLayout.LayoutParams(dp(26), dp(26)));
 
         // Title
         tvTopTitle = new TextView(this);
-        tvTopTitle.setText("Google Drive 相册");
-        tvTopTitle.setTextColor(Color.parseColor("#E2E2E9"));
+        tvTopTitle.setText("Google Photos · 云相册");
+        tvTopTitle.setTextColor(m3.onSurface);
         tvTopTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
         tvTopTitle.setTypeface(null, Typeface.BOLD);
         tvTopTitle.setPadding(dp(12), 0, dp(12), 0);
@@ -269,7 +250,7 @@ public class MainActivity extends AppCompatActivity {
         // Column Switcher (3 / 4 columns)
         ivTopColToggle = new ImageView(this);
         ivTopColToggle.setImageResource(R.drawable.ic_m3_grid);
-        ivTopColToggle.setColorFilter(Color.parseColor("#C4C6D0"));
+        ivTopColToggle.setColorFilter(m3.onSurfaceVariant);
         ivTopColToggle.setPadding(dp(4), dp(4), dp(4), dp(4));
         ivTopColToggle.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -278,17 +259,17 @@ public class MainActivity extends AppCompatActivity {
                 BackupState.get(MainActivity.this).setGridColumns(gridColumns);
                 photosLayoutManager.setSpanCount(gridColumns);
                 timelineAdapter.notifyDataSetChanged();
-                Toast.makeText(MainActivity.this, "已切换为 " + gridColumns + " 列布局", Toast.LENGTH_SHORT).show();
+                Toast.makeText(MainActivity.this, "已切换为 " + gridColumns + " 列视图", Toast.LENGTH_SHORT).show();
             }
         });
         pill.addView(ivTopColToggle, new LinearLayout.LayoutParams(dp(32), dp(32)));
 
-        // Sync Avatar Badge
+        // Sync Avatar Badge (Monet primaryContainer circle)
         ImageView ivSyncBadge = new ImageView(this);
         ivSyncBadge.setImageResource(R.drawable.ic_m3_sync);
-        ivSyncBadge.setColorFilter(Color.parseColor("#A8C7FA"));
+        ivSyncBadge.setColorFilter(m3.onPrimaryContainer);
         ivSyncBadge.setPadding(dp(6), dp(6), dp(6), dp(6));
-        ivSyncBadge.setBackground(makeRoundRect(Color.parseColor("#284777"), dp(16)));
+        ivSyncBadge.setBackground(makeRoundRect(m3.primaryContainer, dp(16)));
         ivSyncBadge.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -305,8 +286,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupPhotosView() {
         photosRefreshLayout = new SwipeRefreshLayout(this);
-        photosRefreshLayout.setColorSchemeColors(Color.parseColor("#A8C7FA"));
-        photosRefreshLayout.setProgressBackgroundColorSchemeColor(Color.parseColor("#1E2025"));
+        photosRefreshLayout.setColorSchemeColors(m3.primary);
+        photosRefreshLayout.setProgressBackgroundColorSchemeColor(m3.surfaceContainer);
         photosRefreshLayout.setOnRefreshListener(new SwipeRefreshLayout.OnRefreshListener() {
             @Override
             public void onRefresh() {
@@ -329,7 +310,7 @@ public class MainActivity extends AppCompatActivity {
         });
         photosRecyclerView.setLayoutManager(photosLayoutManager);
         photosRecyclerView.setHasFixedSize(true);
-        photosRecyclerView.setItemViewCacheSize(20);
+        photosRecyclerView.setItemViewCacheSize(25);
 
         timelineAdapter = new TimelineAdapter();
         photosRecyclerView.setAdapter(timelineAdapter);
@@ -340,8 +321,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupAlbumsView() {
         albumsRefreshLayout = new SwipeRefreshLayout(this);
-        albumsRefreshLayout.setColorSchemeColors(Color.parseColor("#A8C7FA"));
-        albumsRefreshLayout.setProgressBackgroundColorSchemeColor(Color.parseColor("#1E2025"));
+        albumsRefreshLayout.setColorSchemeColors(m3.primary);
+        albumsRefreshLayout.setProgressBackgroundColorSchemeColor(m3.surfaceContainer);
         albumsRefreshLayout.setOnRefreshListener(new SwipeRefreshLayout.OnRefreshListener() {
             @Override
             public void onRefresh() {
@@ -361,7 +342,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupSyncView() {
         syncScrollView = new ScrollView(this);
-        syncScrollView.setBackgroundColor(ContextCompat.getColor(this, R.color.m3_surface));
+        syncScrollView.setBackgroundColor(m3.surface);
         syncContainer = new LinearLayout(this);
         syncContainer.setOrientation(LinearLayout.VERTICAL);
         syncContainer.setPadding(dp(16), dp(16), dp(16), dp(32));
@@ -417,7 +398,7 @@ public class MainActivity extends AppCompatActivity {
         ivTopColToggle.setVisibility("photos".equals(tab) ? View.VISIBLE : View.GONE);
 
         if ("photos".equals(tab)) {
-            tvTopTitle.setText("Google Drive 相册");
+            tvTopTitle.setText("Google Photos · 云相册");
         } else if ("albums".equals(tab)) {
             tvTopTitle.setText("精选相册与目录");
         } else if ("sync".equals(tab)) {
@@ -491,7 +472,6 @@ public class MainActivity extends AppCompatActivity {
                     }
                 });
 
-                // Build Timeline Entries
                 final List<TimelineEntry> tEntries = buildTimelineEntries(merged);
                 final List<AlbumCard> aCards = buildAlbumCards(merged);
 
@@ -760,7 +740,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Timeline RecyclerView Adapter (Google MD3 Gallery Layout).
+     * Timeline RecyclerView Adapter (Google Photos Material You Grid).
      */
     private class TimelineAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
@@ -778,12 +758,12 @@ public class MainActivity extends AppCompatActivity {
                 header.setPadding(dp(16), dp(22), dp(16), dp(8));
 
                 TextView tvTitle = new TextView(parent.getContext());
-                tvTitle.setTextColor(Color.parseColor("#E2E2E9"));
-                tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
+                tvTitle.setTextColor(m3.onSurface);
+                tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17);
                 tvTitle.setTypeface(null, Typeface.BOLD);
 
                 TextView tvSub = new TextView(parent.getContext());
-                tvSub.setTextColor(Color.parseColor("#8E9099"));
+                tvSub.setTextColor(m3.outline);
                 tvSub.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
 
                 header.addView(tvTitle);
@@ -803,8 +783,8 @@ public class MainActivity extends AppCompatActivity {
                 // Cloud-done subtle badge
                 ImageView ivCloud = new ImageView(parent.getContext());
                 ivCloud.setImageResource(R.drawable.ic_m3_cloud_done);
-                ivCloud.setColorFilter(Color.parseColor("#A8C7FA"));
-                ivCloud.setBackground(makeRoundRect("#99000000", dp(10)));
+                ivCloud.setColorFilter(m3.primary);
+                ivCloud.setBackground(makeRoundRect(Color.parseColor("#99000000"), dp(10)));
                 ivCloud.setPadding(dp(3), dp(3), dp(3), dp(3));
                 FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.BOTTOM | Gravity.RIGHT);
                 clp.setMargins(0, 0, dp(4), dp(4));
@@ -815,7 +795,7 @@ public class MainActivity extends AppCompatActivity {
                 tvDur.setTextColor(Color.WHITE);
                 tvDur.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 10);
                 tvDur.setTypeface(null, Typeface.BOLD);
-                tvDur.setBackground(makeRoundRect("#99000000", dp(8)));
+                tvDur.setBackground(makeRoundRect(Color.parseColor("#99000000"), dp(8)));
                 tvDur.setPadding(dp(6), dp(2), dp(6), dp(2));
                 FrameLayout.LayoutParams vlp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.LEFT);
                 vlp.setMargins(dp(4), 0, 0, dp(4));
@@ -836,7 +816,6 @@ public class MainActivity extends AppCompatActivity {
                 final PhotoViewHolder ph = (PhotoViewHolder) holder;
                 final GalleryItem item = entry.item;
 
-                // Adjust square height dynamically
                 int screenW = getResources().getDisplayMetrics().widthPixels;
                 int size = screenW / gridColumns;
                 ViewGroup.LayoutParams lp = ph.itemView.getLayoutParams();
@@ -899,7 +878,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Albums Grid Adapter (Google Photos Library Style M3 Cards).
+     * Albums Grid Adapter (Google Photos Library Style M3 Cards with Monet Palette).
      */
     private class AlbumsAdapter extends RecyclerView.Adapter<AlbumsAdapter.AlbumViewHolder> {
 
@@ -909,8 +888,8 @@ public class MainActivity extends AppCompatActivity {
             MaterialCardView card = new MaterialCardView(parent.getContext());
             card.setRadius(dp(16));
             card.setCardElevation(dp(2));
-            card.setCardBackgroundColor(Color.parseColor("#1E2025"));
-            card.setStrokeColor(Color.parseColor("#33353A"));
+            card.setCardBackgroundColor(m3.surfaceContainer);
+            card.setStrokeColor(m3.outlineVariant);
             card.setStrokeWidth(dp(1));
 
             int m = dp(8);
@@ -932,14 +911,14 @@ public class MainActivity extends AppCompatActivity {
             info.setPadding(dp(12), dp(10), dp(12), dp(12));
 
             TextView tvTitle = new TextView(parent.getContext());
-            tvTitle.setTextColor(Color.parseColor("#E2E2E9"));
+            tvTitle.setTextColor(m3.onSurface);
             tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
             tvTitle.setTypeface(null, Typeface.BOLD);
             tvTitle.setSingleLine(true);
             tvTitle.setEllipsize(TextUtils.TruncateAt.END);
 
             TextView tvCount = new TextView(parent.getContext());
-            tvCount.setTextColor(Color.parseColor("#8E9099"));
+            tvCount.setTextColor(m3.outline);
             tvCount.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
 
             info.addView(tvTitle);
@@ -949,7 +928,7 @@ public class MainActivity extends AppCompatActivity {
             MaterialSwitch swBackup = new MaterialSwitch(parent.getContext());
             swBackup.setText("自动备份");
             swBackup.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
-            swBackup.setTextColor(Color.parseColor("#C4C6D0"));
+            swBackup.setTextColor(m3.onSurfaceVariant);
             info.addView(swBackup);
 
             root.addView(info);
@@ -973,7 +952,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 holder.ivCover.setImageResource(card.iconRes);
                 holder.ivCover.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-                holder.ivCover.setColorFilter(Color.parseColor("#A8C7FA"));
+                holder.ivCover.setColorFilter(m3.primary);
             }
 
             if (card.isVirtual) {
@@ -1161,8 +1140,8 @@ public class MainActivity extends AppCompatActivity {
         // M3 Elevated Card for Cloud Engine Status
         MaterialCardView cardStatus = new MaterialCardView(this);
         cardStatus.setRadius(dp(20));
-        cardStatus.setCardBackgroundColor(Color.parseColor("#1E2025"));
-        cardStatus.setStrokeColor(Color.parseColor("#33353A"));
+        cardStatus.setCardBackgroundColor(m3.surfaceContainer);
+        cardStatus.setStrokeColor(m3.outlineVariant);
         cardStatus.setStrokeWidth(dp(1));
         cardStatus.setCardElevation(dp(2));
 
@@ -1172,13 +1151,13 @@ public class MainActivity extends AppCompatActivity {
 
         TextView tvState = new TextView(this);
         tvState.setText(state.isRunning ? "⚡ 正在直传直备中..." : "☁️ 云端归档引擎就绪");
-        tvState.setTextColor(Color.parseColor("#A8C7FA"));
+        tvState.setTextColor(m3.primary);
         tvState.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
         tvState.setTypeface(null, Typeface.BOLD);
 
         TextView tvDesc = new TextView(this);
         tvDesc.setText("手机直传 Cloudflare R2，通过 Worker 自动秒级归档到 Google Drive，零 VPN 极速访问，0 字节腾讯云服务器磁盘占用。");
-        tvDesc.setTextColor(Color.parseColor("#8E9099"));
+        tvDesc.setTextColor(m3.outline);
         tvDesc.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
         tvDesc.setPadding(0, dp(6), 0, dp(12));
 
@@ -1191,10 +1170,10 @@ public class MainActivity extends AppCompatActivity {
 
         TextView btnScan = new TextView(this);
         btnScan.setText("🚀 立即扫描并备份");
-        btnScan.setTextColor(Color.parseColor("#062E6F"));
+        btnScan.setTextColor(m3.onPrimary);
         btnScan.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
         btnScan.setTypeface(null, Typeface.BOLD);
-        btnScan.setBackground(makeRoundRect(Color.parseColor("#A8C7FA"), dp(12)));
+        btnScan.setBackground(makeRoundRect(m3.primary, dp(12)));
         btnScan.setPadding(dp(16), dp(10), dp(16), dp(10));
         btnScan.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -1237,8 +1216,8 @@ public class MainActivity extends AppCompatActivity {
         // Config Switches
         MaterialCardView cardOpts = new MaterialCardView(this);
         cardOpts.setRadius(dp(20));
-        cardOpts.setCardBackgroundColor(Color.parseColor("#1E2025"));
-        cardOpts.setStrokeColor(Color.parseColor("#33353A"));
+        cardOpts.setCardBackgroundColor(m3.surfaceContainer);
+        cardOpts.setStrokeColor(m3.outlineVariant);
         cardOpts.setStrokeWidth(dp(1));
         LinearLayout.LayoutParams colp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         colp.topMargin = dp(16);
@@ -1251,7 +1230,7 @@ public class MainActivity extends AppCompatActivity {
         MaterialSwitch swWifi = new MaterialSwitch(this);
         swWifi.setText("仅在 Wi-Fi 网络下自动备份");
         swWifi.setChecked(state.isWifiOnly());
-        swWifi.setTextColor(Color.parseColor("#E2E2E9"));
+        swWifi.setTextColor(m3.onSurface);
         swWifi.setOnCheckedChangeListener((btn, isChecked) -> {
             state.saveConfig(state.isAutoBackupEnabled(), isChecked, state.isIncludeVideos(), state.getTargetFolder(), state.getSelectedBuckets());
         });
@@ -1259,7 +1238,7 @@ public class MainActivity extends AppCompatActivity {
         MaterialSwitch swVid = new MaterialSwitch(this);
         swVid.setText("包含视频备份");
         swVid.setChecked(state.isIncludeVideos());
-        swVid.setTextColor(Color.parseColor("#E2E2E9"));
+        swVid.setTextColor(m3.onSurface);
         swVid.setOnCheckedChangeListener((btn, isChecked) -> {
             state.saveConfig(state.isAutoBackupEnabled(), state.isWifiOnly(), isChecked, state.getTargetFolder(), state.getSelectedBuckets());
         });

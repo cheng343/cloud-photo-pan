@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.CloudPhotoPan" parent="Theme.Material3.Dark.NoActionBar">
+    <style name="Theme.CloudPhotoPan" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/m3_primary</item>
         <item name="colorOnPrimary">@color/m3_on_primary</item>
         <item name="colorPrimaryContainer">@color/m3_primary_container</item>
@@ -12,8 +12,9 @@
         <item name="colorOnSurface">@color/m3_on_surface</item>
         <item name="colorSurfaceVariant">@color/m3_outline_variant</item>
         <item name="colorOnSurfaceVariant">@color/m3_on_surface_variant</item>
-        <item name="android:navigationBarColor">@color/m3_surface_container</item>
-        <item name="android:statusBarColor">@color/m3_surface</item>
-        <item name="android:windowLightStatusBar">false</item>
+        <item name="colorOutline">@color/m3_outline</item>
+        <item name="colorOutlineVariant">@color/m3_outline_variant</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
 </resources>

@@ -369,15 +369,16 @@ public class PhotoViewerDialog {
      * Google Photos-style M3 BottomSheetDialog for EXIF & Cloud Metadata.
      */
     private void showExifBottomSheet(MainActivity.GalleryItem item) {
+        final M3Colors m3 = new M3Colors(activity);
         BottomSheetDialog bs = new BottomSheetDialog(activity);
         LinearLayout root = new LinearLayout(activity);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.parseColor("#1E2025")); // M3 Surface Container
+        root.setBackgroundColor(m3.surfaceContainerLow); // M3 Monet Surface Container Low
         root.setPadding(dp(20), dp(12), dp(20), dp(28));
 
         // Drag handle
         View handle = new View(activity);
-        handle.setBackground(makeRoundRect("#8E9099", dp(2)));
+        handle.setBackground(makeRoundRect(m3.outline, dp(2)));
         LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(dp(36), dp(4));
         hlp.gravity = Gravity.CENTER_HORIZONTAL;
         hlp.bottomMargin = dp(16);
@@ -385,7 +386,7 @@ public class PhotoViewerDialog {
 
         TextView tvH = new TextView(activity);
         tvH.setText("详细参数 (EXIF / 云存储)");
-        tvH.setTextColor(Color.parseColor("#E2E2E9"));
+        tvH.setTextColor(m3.onSurface);
         tvH.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17);
         tvH.setTypeface(null, Typeface.BOLD);
         tvH.setPadding(0, 0, 0, dp(14));
@@ -432,25 +433,25 @@ public class PhotoViewerDialog {
             } catch (Exception ignored) {}
         }
 
-        root.addView(makeInfoRow("文件名称", item.name));
+        root.addView(makeInfoRow(m3, "文件名称", item.name));
         if (item.dateTaken > 0) {
             String dateStr = new SimpleDateFormat("yyyy年M月d日 HH:mm:ss", Locale.getDefault()).format(new Date(item.dateTaken));
-            root.addView(makeInfoRow("拍摄时间", dateStr));
+            root.addView(makeInfoRow(m3, "拍摄时间", dateStr));
         }
-        if (!camera.equals("未知相机")) root.addView(makeInfoRow("拍摄设备", camera));
-        if (!params.isEmpty()) root.addView(makeInfoRow("曝光参数", params));
-        if (!resolution.isEmpty()) root.addView(makeInfoRow("画面尺寸", resolution));
-        if (item.size > 0) root.addView(makeInfoRow("文件大小", formatSize(item.size)));
-        root.addView(makeInfoRow("存储类型", item.isLocalOnly() ? "仅保存在本机相册" : "已直传并归档至 Google Drive"));
+        if (!camera.equals("未知相机")) root.addView(makeInfoRow(m3, "拍摄设备", camera));
+        if (!params.isEmpty()) root.addView(makeInfoRow(m3, "曝光参数", params));
+        if (!resolution.isEmpty()) root.addView(makeInfoRow(m3, "画面尺寸", resolution));
+        if (item.size > 0) root.addView(makeInfoRow(m3, "文件大小", formatSize(item.size)));
+        root.addView(makeInfoRow(m3, "存储类型", item.isLocalOnly() ? "仅保存在本机相册" : "已直传并归档至 Google Drive"));
 
         if (!TextUtils.isEmpty(item.cloudUrl)) {
             TextView btnCopy = new TextView(activity);
             btnCopy.setText("📋 复制云端直链");
-            btnCopy.setTextColor(Color.parseColor("#A8C7FA"));
+            btnCopy.setTextColor(m3.onPrimaryContainer);
             btnCopy.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
             btnCopy.setTypeface(null, Typeface.BOLD);
             btnCopy.setPadding(dp(14), dp(10), dp(14), dp(10));
-            btnCopy.setBackground(makeRoundRect("#282A2F", dp(8)));
+            btnCopy.setBackground(makeRoundRect(m3.primaryContainer, dp(8)));
             btnCopy.setGravity(Gravity.CENTER);
             btnCopy.setOnClickListener(new View.OnClickListener() {
                 @Override
@@ -471,19 +472,19 @@ public class PhotoViewerDialog {
         bs.show();
     }
 
-    private LinearLayout makeInfoRow(String label, String value) {
+    private LinearLayout makeInfoRow(M3Colors m3, String label, String value) {
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(0, dp(6), 0, dp(6));
 
         TextView tvL = new TextView(activity);
         tvL.setText(label);
-        tvL.setTextColor(Color.parseColor("#8E9099"));
+        tvL.setTextColor(m3.outline);
         tvL.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11);
 
         TextView tvV = new TextView(activity);
         tvV.setText(value);
-        tvV.setTextColor(Color.parseColor("#E2E2E9"));
+        tvV.setTextColor(m3.onSurface);
         tvV.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13);
         tvV.setTypeface(null, Typeface.BOLD);
 
@@ -506,8 +507,12 @@ public class PhotoViewerDialog {
     }
 
     private GradientDrawable makeRoundRect(String colorHex, int radiusPx) {
+        return makeRoundRect(Color.parseColor(colorHex), radiusPx);
+    }
+
+    private GradientDrawable makeRoundRect(int color, int radiusPx) {
         GradientDrawable gd = new GradientDrawable();
-        gd.setColor(Color.parseColor(colorHex));
+        gd.setColor(color);
         gd.setCornerRadius(radiusPx);
         return gd;
     }

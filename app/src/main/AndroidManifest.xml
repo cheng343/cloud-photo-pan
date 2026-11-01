@@ -14,6 +14,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
+        android:name=".PanApp"
         android:allowBackup="true"
         android:label="云相册网盘"
         android:usesCleartextTraffic="true"
