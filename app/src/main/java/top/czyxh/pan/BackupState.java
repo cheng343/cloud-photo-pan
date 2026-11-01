@@ -20,7 +20,7 @@ public class BackupState {
 
     public volatile boolean isRunning = false;
     public volatile boolean stopRequested = false;
-    public volatile String statusText = "待机中";
+    public volatile String statusText = "已就绪";
     public volatile String currentFile = "";
     public volatile int currentProgress = 0;
     public volatile long currentSpeedBps = 0;
@@ -51,6 +51,14 @@ public class BackupState {
         return prefs.getBoolean("include_videos", true);
     }
 
+    public int getGridColumns() {
+        return prefs.getInt("grid_columns", 3);
+    }
+
+    public void setGridColumns(int cols) {
+        prefs.edit().putInt("grid_columns", cols).apply();
+    }
+
     public String getTargetFolder() {
         return prefs.getString("target_folder", "/GoogleDrive/photos");
     }
@@ -70,6 +78,21 @@ public class BackupState {
                 .apply();
     }
 
+    public synchronized Set<String> getFavoritesSet() {
+        return new HashSet<>(prefs.getStringSet("favorite_keys", new HashSet<String>()));
+    }
+
+    public synchronized boolean isFavorite(String key) {
+        return getFavoritesSet().contains(key);
+    }
+
+    public synchronized void toggleFavorite(String key) {
+        Set<String> favs = getFavoritesSet();
+        if (favs.contains(key)) favs.remove(key);
+        else favs.add(key);
+        prefs.edit().putStringSet("favorite_keys", favs).apply();
+    }
+
     public synchronized Set<String> getBackedUpSet() {
         return new HashSet<>(prefs.getStringSet("backed_up_keys", new HashSet<String>()));
     }
@@ -82,7 +105,7 @@ public class BackupState {
 
     public synchronized void clearBackedUpLedger() {
         prefs.edit().putStringSet("backed_up_keys", new HashSet<String>()).apply();
-        addLog("已重置本地备份账本，下次扫描将重新与云端比对");
+        addLog("已重置本地备份记录账本");
     }
 
     public synchronized void addLog(String msg) {
